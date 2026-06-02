@@ -7,8 +7,8 @@ services:
     depends_on:
       arcadedb:
         condition: service_healthy
-    ports:
-      - "${API_PORT:-8000}:8000"
+    expose:
+      - "8000"
     restart: unless-stopped
     healthcheck:
       test:
@@ -17,6 +17,31 @@ services:
           "python",
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mcp:
+    build:
+      context: .
+    command: ["uvicorn", "app.mcp_server:app", "--host", "0.0.0.0", "--port", "9000"]
+    env_file:
+      - ${ENV_FILE:-.env}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${MCP_PORT:-9000}:9000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health/ready')",
         ]
       interval: 20s
       timeout: 5s

@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     queue_maxsize: int = 1000
     bootstrap_retry_delay_seconds: float = 3.0
     bootstrap_max_attempts: int = Field(default=20, alias="BOOTSTRAP_MAX_ATTEMPTS")
+    mcp_port: int = Field(default=9000, alias="MCP_PORT")
+    mcp_bearer_token: str = Field(default="change-me", alias="MCP_BEARER_TOKEN")
+    kg_api_base_url: str = Field(default="http://api:8000", alias="KG_API_BASE_URL")
+    kg_api_key: str = Field(default="change-me", alias="KG_API_KEY")
+    mcp_poll_interval_seconds: float = Field(default=1.0, alias="MCP_POLL_INTERVAL_SECONDS")
+    mcp_ingestion_timeout_seconds: float = Field(default=90.0, alias="MCP_INGESTION_TIMEOUT_SECONDS")
 
 
 @lru_cache
