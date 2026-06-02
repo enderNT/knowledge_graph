@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -137,3 +138,35 @@ async def test_mcp_server_translates_tool_results_and_errors():
         assert any(
             "source or target concept not found" in getattr(content, "text", "") for content in link.content
         )
+
+
+@pytest.mark.anyio
+async def test_mcp_streamable_http_client_works_with_documented_url():
+    pytest.importorskip("mcp")
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    app = create_app(settings=_settings(), backend_client=FakeBackendClient())
+    transport = httpx.ASGITransport(app=app)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            headers={"Authorization": "Bearer test-bearer-token"},
+        ) as http_client:
+            async with streamable_http_client(
+                "http://testserver/mcp",
+                http_client=http_client,
+            ) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+
+    assert sorted(tool.name for tool in tools.tools) == [
+        "add_knowledge_fragment",
+        "get_neighborhood",
+        "link_concepts",
+        "search_candidates",
+        "upsert_concept",
+    ]

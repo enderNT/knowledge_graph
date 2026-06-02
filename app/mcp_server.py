@@ -76,9 +76,10 @@ def create_mcp_server(
     mcp = FastMCP(
         "knowledge-graph-mcp",
         instructions="Knowledge graph semantico con cinco tools de ingesta, busqueda y vecindad.",
+        host="0.0.0.0",
         stateless_http=True,
         json_response=True,
-        streamable_http_path="/",
+        streamable_http_path="/mcp",
     )
 
     def translate_backend_error(exc: MCPBackendError) -> ToolError:
@@ -225,7 +226,7 @@ def create_app(
         is_ready, payload = await backend.check_ready()
         return JSONResponse(status_code=200 if is_ready else 503, content=payload)
 
-    app.mount("/mcp", mcp.streamable_http_app())
+    app.mount("/", mcp.streamable_http_app())
     return app
 
 

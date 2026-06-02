@@ -36,6 +36,7 @@ Por defecto, en Docker Compose solo `mcp` se publica; `api` y `arcadedb` quedan 
 Endpoint MCP:
 
 - `GET/POST /mcp`
+- `/mcp/` tambien responde, pero la URL canónica documentada para clientes es `/mcp`
 
 Health checks del servicio MCP:
 
@@ -81,6 +82,12 @@ Variables nuevas para MCP:
 - Exponer solo el servicio `mcp` por HTTPS.
 - Mantener `api` y `arcadedb` como servicios internos.
 - Usar `GET /health/ready` del servicio `mcp` como health check HTTP público.
+
+## Smoke Tests
+
+- Salud del servicio MCP: `curl -i https://tu-dominio-mcp/health/ready`
+- URL MCP canónica sin redirect manual: conectar el cliente MCP a `https://tu-dominio-mcp/mcp`
+- Verificación mínima esperada con cliente MCP: `initialize`, `tools/list`, `add_knowledge_fragment`, `search_candidates` y `get_neighborhood`
 
 ## Diseño operativo
 

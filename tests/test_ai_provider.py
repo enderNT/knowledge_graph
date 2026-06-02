@@ -67,6 +67,21 @@ def test_stub_extractor_keeps_explicit_contrast_relations(settings):
     assert extraction.relations[0].to_name == "Condicionamiento Operante"
 
 
+def test_stub_extractor_trims_predicate_suffixes_from_concepts(settings):
+    provider = StubAIProvider(settings)
+    text = (
+        "Hardware y software son componentes fundamentales. "
+        "Redes y conectividad permiten comunicar dispositivos."
+    )
+
+    extraction = asyncio.run(provider.extract(text, "es", ["Tecnología"]))
+    concept_names = {item.canonical_name for item in extraction.concepts}
+
+    assert {"Hardware", "Software", "Redes", "Conectividad"}.issubset(concept_names)
+    assert all(" Son " not in f" {name} " for name in concept_names)
+    assert all(" Permiten " not in f" {name} " for name in concept_names)
+
+
 def test_fit_embedding_dimensions_reduces_to_target_size():
     fitted = fit_embedding_dimensions([float(index) for index in range(12)], 4)
 

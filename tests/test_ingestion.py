@@ -102,6 +102,90 @@ def test_neighborhood_exposes_claims_and_episode_evidence(client, auth_headers):
     assert body["episodes"]
 
 
+def test_neighborhood_depth_two_includes_second_hop(client, auth_headers):
+    root = client.put(
+        "/v1/concepts/upsert",
+        headers=auth_headers,
+        json={
+            "canonical_name": "Hardware",
+            "aliases": [],
+            "domain": "Tecnología",
+            "description": "Componentes físicos.",
+        },
+    ).json()["concept"]["uid"]
+    middle = client.put(
+        "/v1/concepts/upsert",
+        headers=auth_headers,
+        json={
+            "canonical_name": "Software",
+            "aliases": [],
+            "domain": "Tecnología",
+            "description": "Componentes lógicos.",
+        },
+    ).json()["concept"]["uid"]
+    leaf = client.put(
+        "/v1/concepts/upsert",
+        headers=auth_headers,
+        json={
+            "canonical_name": "Conectividad",
+            "aliases": [],
+            "domain": "Tecnología",
+            "description": "Comunicación entre dispositivos.",
+        },
+    ).json()["concept"]["uid"]
+
+    assert client.post(
+        "/v1/concepts/link",
+        headers=auth_headers,
+        json={"from": root, "relation": "RELATED_TO", "to": middle},
+    ).status_code == 200
+    assert client.post(
+        "/v1/concepts/link",
+        headers=auth_headers,
+        json={"from": middle, "relation": "RELATED_TO", "to": leaf},
+    ).status_code == 200
+
+    depth_one = client.get(f"/v1/concepts/{root}/neighborhood?depth=1", headers=auth_headers)
+    depth_two = client.get(f"/v1/concepts/{root}/neighborhood?depth=2", headers=auth_headers)
+
+    assert depth_one.status_code == 200
+    assert depth_two.status_code == 200
+    assert {item["name"] for item in depth_one.json()["nodes"]} == {"Software"}
+    assert {"Software", "Conectividad"}.issubset({item["name"] for item in depth_two.json()["nodes"]})
+
+
+def test_ingestion_search_returns_canonical_technology_concepts(client, auth_headers):
+    accepted = client.post(
+        "/v1/knowledge/fragments",
+        headers=auth_headers,
+        json={
+            "text": (
+                "Hardware y software son componentes fundamentales. "
+                "Redes y conectividad permiten comunicar dispositivos."
+            ),
+            "source_type": "manual_input",
+            "tags": ["Tecnología"],
+            "language": "es",
+        },
+    ).json()
+    job = _wait_for_job_completion(client, auth_headers, accepted["job_id"])
+
+    assert job["status"] == "completed"
+
+    for query, expected in (
+        ("hardware", "Hardware"),
+        ("software", "Software"),
+        ("conectividad", "Conectividad"),
+    ):
+        response = client.post(
+            "/v1/search/candidates",
+            headers=auth_headers,
+            json={"query": query, "domain_hint": "Tecnología", "limit": 5},
+        )
+        assert response.status_code == 200
+        assert response.json()["results"][0]["canonical_name"] == expected
+
+
 def test_ambiguous_resolution_marks_needs_review(settings, store):
     provider = StubAIProvider(settings)
     service = IngestionService(

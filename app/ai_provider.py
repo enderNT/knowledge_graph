@@ -62,6 +62,8 @@ _CLAIM_VERB_MARKERS = {
     "surgió",
     "tiene",
     "tienen",
+    "permite",
+    "permiten",
 }
 _CONCEPT_HEAD_PATTERNS = (
     re.compile(
@@ -444,10 +446,14 @@ class StubAIProvider(AIProvider):
             line = raw_line.strip()
             if not line or "\t" in line or line.endswith(":"):
                 continue
-            if "," in line or re.search(r"\s[ye]\s", line):
-                concepts.extend(self._extract_list_items(line))
-                continue
-            concepts.extend(self._extract_capitalized_concepts_from_chunk(line))
+            for chunk in re.split(r"(?<=[.!?])\s+", line):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if "," in chunk or re.search(r"\s[ye]\s", chunk):
+                    concepts.extend(self._extract_list_items(chunk))
+                    continue
+                concepts.extend(self._extract_capitalized_concepts_from_chunk(chunk))
         return concepts
 
     def _extract_capitalized_concepts_from_chunk(self, text: str) -> list[str]:
@@ -575,6 +581,7 @@ class StubAIProvider(AIProvider):
 
     def _clean_concept_name(self, value: str) -> str:
         cleaned = re.sub(r"\s+", " ", value.replace("\t", " ")).strip(" .,:;")
+        cleaned = self._trim_predicate_suffix(cleaned)
         return self._titleize_phrase(cleaned)
 
     def _titleize_phrase(self, value: str) -> str:
@@ -587,6 +594,16 @@ class StubAIProvider(AIProvider):
             else:
                 titled.append(word.capitalize() if word.islower() else word)
         return " ".join(titled)
+
+    def _trim_predicate_suffix(self, value: str) -> str:
+        words = [word for word in re.split(r"\s+", value.strip()) if word]
+        trimmed: list[str] = []
+        for index, word in enumerate(words):
+            normalized = normalize_text(word)
+            if index > 0 and normalized in _CLAIM_VERB_MARKERS:
+                break
+            trimmed.append(word)
+        return " ".join(trimmed).strip()
 
 
 class OpenAICompatibleProvider(AIProvider):

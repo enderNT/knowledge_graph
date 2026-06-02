@@ -490,45 +490,41 @@ class ArcadeKnowledgeStore:
         if not concept:
             return None
 
-        direct_rows = await self.client.query(
-            (
-                "MATCH {type: Concept, as: c, where: (uid = :uid)}"
-                ".bothE(){as: e}.bothV(){as: n, where: (@rid <> $matched.c.@rid)} "
-                "RETURN c.uid as concept_uid, c.canonical_name as concept_name, "
-                "n.uid as node_uid, coalesce(n.canonical_name, n.text, n.name, n.value) as node_name, "
-                "coalesce(n.domain, '') as node_domain, type(e) as relation, "
-                "e.confidence as confidence, e.evidence_episode_id as evidence_episode_id, "
-                "e.@out as out_rid, e.@in as in_rid",
-            ),
-            {"uid": concept.uid},
-            language="sql",
-        )
-
         nodes: dict[str, NeighborhoodNode] = {}
-        relations: list[NeighborhoodRelation] = []
-        for row in direct_rows:
-            node_uid = row.get("node_uid")
-            if not node_uid:
-                continue
-            nodes[node_uid] = NeighborhoodNode(
-                uid=node_uid,
-                type="neighbor",
-                name=row.get("node_name") or node_uid,
-                domain=row.get("node_domain") or None,
-            )
-            relations.append(
-                NeighborhoodRelation(
-                    from_uid=concept.uid,
-                    from_name=concept.canonical_name,
-                    relation=row.get("relation") or "RELATED_TO",
-                    to_uid=node_uid,
-                    to_name=row.get("node_name") or node_uid,
-                    confidence=row.get("confidence"),
-                    evidence_episode_id=row.get("evidence_episode_id"),
-                )
-            )
+        relations: dict[tuple[str, str, str, str | None], NeighborhoodRelation] = {}
+        frontier = [concept]
+        max_hops = 2 if depth == 2 else 1
 
-        claim_rows = await self.client.query(
+        for hop in range(max_hops):
+            next_frontier: list[ConceptRecord] = []
+            seen_next: set[str] = set()
+            for current in frontier:
+                edge_rows = await self._fetch_neighborhood_edge_rows(current.uid)
+                for row in edge_rows:
+                    node = self._build_neighborhood_node(row, current.uid)
+                    relation = self._build_neighborhood_relation(row)
+                    if not node or not relation or node.uid == concept.uid:
+                        continue
+
+                    nodes[node.uid] = node
+                    relation_key = (
+                        relation.from_uid,
+                        relation.relation,
+                        relation.to_uid,
+                        relation.evidence_episode_id,
+                    )
+                    relations[relation_key] = relation
+
+                    if hop == 0 and node.type == "Concept" and node.uid not in seen_next:
+                        related_concept = await self.get_concept(node.uid)
+                        if related_concept:
+                            next_frontier.append(related_concept)
+                            seen_next.add(node.uid)
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        claim_rows = await self._safe_query(
             (
                 "MATCH {type: Concept, as: c, where: (uid = :uid)}"
                 ".in('EXPLAINS'){as: claim}.out('SUPPORTED_BY'){as: episode} "
@@ -536,7 +532,6 @@ class ArcadeKnowledgeStore:
                 "episode.uid as episode_uid, episode.text as episode_text, episode.status as episode_status"
             ),
             {"uid": concept.uid},
-            language="sql",
         )
 
         claims: list[dict[str, Any]] = []
@@ -566,10 +561,85 @@ class ArcadeKnowledgeStore:
                 description=concept.description,
             ),
             nodes=list(nodes.values())[: 50 if depth == 2 else 20],
-            relations=relations[: 50 if depth == 2 else 20],
+            relations=list(relations.values())[: 50 if depth == 2 else 20],
             claims=claims,
             episodes=list(episodes.values()),
         )
+
+    async def _fetch_neighborhood_edge_rows(self, concept_uid: str) -> list[dict[str, Any]]:
+        outgoing = await self._safe_query(
+            (
+                "MATCH {type: Concept, as: c, where: (uid = :uid)}"
+                ".outE(){as: e}.inV(){as: n} "
+                "RETURN c.uid as from_uid, c.canonical_name as from_name, "
+                "n.uid as to_uid, coalesce(n.canonical_name, n.text, n.name, n.value, n.uid) as to_name, "
+                "n.canonical_name as to_concept_name, n.text as to_text, coalesce(n.domain, '') as to_domain, "
+                "coalesce(n.description, '') as to_description, type(e) as relation, "
+                "e.confidence as confidence, e.evidence_episode_id as evidence_episode_id"
+            ),
+            {"uid": concept_uid},
+        )
+        incoming = await self._safe_query(
+            (
+                "MATCH {type: Concept, as: c, where: (uid = :uid)}"
+                ".inE(){as: e}.outV(){as: n} "
+                "RETURN n.uid as from_uid, coalesce(n.canonical_name, n.text, n.name, n.value, n.uid) as from_name, "
+                "n.canonical_name as from_concept_name, n.text as from_text, coalesce(n.domain, '') as from_domain, "
+                "coalesce(n.description, '') as from_description, c.uid as to_uid, c.canonical_name as to_name, "
+                "type(e) as relation, e.confidence as confidence, e.evidence_episode_id as evidence_episode_id"
+            ),
+            {"uid": concept_uid},
+        )
+        return [*outgoing, *incoming]
+
+    def _build_neighborhood_node(self, row: dict[str, Any], current_uid: str) -> NeighborhoodNode | None:
+        if row.get("from_uid") == current_uid:
+            prefix = "to"
+        elif row.get("to_uid") == current_uid:
+            prefix = "from"
+        else:
+            return None
+
+        node_uid = row.get(f"{prefix}_uid")
+        if not node_uid:
+            return None
+
+        concept_name = row.get(f"{prefix}_concept_name")
+        return NeighborhoodNode(
+            uid=node_uid,
+            type="Concept" if concept_name else "neighbor",
+            name=row.get(f"{prefix}_name") or node_uid,
+            domain=(row.get(f"{prefix}_domain") or None) if concept_name else None,
+            description=(row.get(f"{prefix}_description") or None) if concept_name else None,
+        )
+
+    def _build_neighborhood_relation(self, row: dict[str, Any]) -> NeighborhoodRelation | None:
+        from_uid = row.get("from_uid")
+        to_uid = row.get("to_uid")
+        if not from_uid or not to_uid:
+            return None
+
+        return NeighborhoodRelation(
+            from_uid=from_uid,
+            from_name=row.get("from_name") or from_uid,
+            relation=row.get("relation") or "RELATED_TO",
+            to_uid=to_uid,
+            to_name=row.get("to_name") or to_uid,
+            confidence=row.get("confidence"),
+            evidence_episode_id=row.get("evidence_episode_id"),
+        )
+
+    async def _safe_query(
+        self,
+        command: str,
+        params: dict[str, Any] | None = None,
+        *,
+        language: str = "sql",
+    ) -> list[dict[str, Any]]:
+        try:
+            return await self.client.query(command, params, language=language)
+        except httpx.HTTPStatusError:
+            return []
 
     async def _ensure_domain(self, name: str) -> None:
         normalized_name = normalize_text(name)
