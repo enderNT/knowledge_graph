@@ -43,6 +43,24 @@ def test_ingestion_pipeline_end_to_end(client, auth_headers):
     assert episode.status_code == 200
     assert episode.json()["status"] == "processed"
 
+    tutor_by_episode = client.post(
+        "/v1/search/tutor-context",
+        headers=auth_headers,
+        json={"episode_id": accepted["episode_id"]},
+    )
+    tutor_by_job = client.post(
+        "/v1/search/tutor-context",
+        headers=auth_headers,
+        json={"job_id": accepted["job_id"]},
+    )
+    assert tutor_by_episode.status_code == 200
+    assert tutor_by_job.status_code == 200
+    assert tutor_by_episode.json()["status"] == "ok"
+    assert tutor_by_job.json()["status"] == "ok"
+    assert tutor_by_job.json()["resolved_reference"]["resolved_episode_id"] == accepted["episode_id"]
+    assert tutor_by_job.json()["concepts"] == tutor_by_episode.json()["concepts"]
+    assert tutor_by_job.json()["claims"] == tutor_by_episode.json()["claims"]
+
 
 def test_neighborhood_exposes_claims_and_episode_evidence(client, auth_headers):
     first = client.put(

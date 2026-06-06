@@ -32,8 +32,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    ports:
-      - "${MCP_PORT:-9000}:9000"
+    expose:
+      - "9000"
     restart: unless-stopped
     healthcheck:
       test:
@@ -42,6 +42,31 @@ services:
           "python",
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health/ready')",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  agent-mcp:
+    build:
+      context: .
+    command: ["uvicorn", "app.agent_mcp_server:app", "--host", "0.0.0.0", "--port", "9100"]
+    env_file:
+      - ${ENV_FILE:-.env}
+    depends_on:
+      mcp:
+        condition: service_healthy
+    ports:
+      - "${AGENT_MCP_PORT:-9100}:9100"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health/ready')",
         ]
       interval: 20s
       timeout: 5s

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -133,3 +135,101 @@ async def test_backend_error_translation(status_code: int, error_type: type[Exce
         await client.close()
 
     assert str(exc_info.value) == f"error-{status_code}"
+
+
+@pytest.mark.asyncio
+async def test_learning_context_request_and_response_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/search/learning-context"
+        assert json.loads(request.content.decode()) == {
+            "query": "memoria",
+            "domain_hint": "Psicología",
+            "candidate_limit": 4,
+            "concept_limit": 2,
+            "claim_limit": 5,
+            "episode_limit": 2,
+            "include_neighborhood": True,
+            "depth": 1,
+        }
+        return _response(
+            request,
+            200,
+            {
+                "query": "memoria",
+                "domain_hint": "Psicología",
+                "status": "no_match",
+                "primary_concepts": [],
+                "relations": [],
+                "claims": [],
+                "episodes": [],
+                "warnings": ["no_candidates_found"],
+                "debug": {
+                    "candidate_count": 0,
+                    "selected_concept_uids": [],
+                    "selection_reasons": [],
+                },
+            },
+        )
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.get_learning_context(
+            query="memoria",
+            domain_hint="Psicología",
+            candidate_limit=4,
+            concept_limit=2,
+            claim_limit=5,
+            episode_limit=2,
+            include_neighborhood=True,
+            depth=1,
+        )
+    finally:
+        await client.close()
+
+    assert result["status"] == "no_match"
+    assert result["debug"]["candidate_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_tutor_context_request_and_response_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/search/tutor-context"
+        assert json.loads(request.content.decode()) == {
+            "query": None,
+            "episode_id": "ep_1",
+            "job_id": None,
+            "depth": 1,
+            "include_evidence": True,
+        }
+        return _response(
+            request,
+            200,
+            {
+                "resolved_reference": {
+                    "input_type": "episode_id",
+                    "input_value": "ep_1",
+                    "resolved_concept_uid": None,
+                    "resolved_concept_name": None,
+                    "resolved_episode_id": "ep_1",
+                    "resolved_job_id": None,
+                    "resolution_reason": None,
+                },
+                "status": "failed",
+                "concepts": [],
+                "claims": [],
+                "relations": [],
+                "source_fragments": [],
+                "evidence": [],
+                "warnings": ["no_traceable_claims"],
+                "failure_reason": "insufficient_traceable_evidence",
+            },
+        )
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.get_tutor_context(episode_id="ep_1")
+    finally:
+        await client.close()
+
+    assert result["status"] == "failed"
+    assert result["failure_reason"] == "insufficient_traceable_evidence"

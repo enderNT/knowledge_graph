@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.utils import normalize_text
 
@@ -74,6 +74,199 @@ class CandidateHit(BaseModel):
 class SearchCandidatesResponse(BaseModel):
     query: str
     results: list[CandidateHit]
+
+
+class LearningContextRequest(BaseModel):
+    query: str = Field(min_length=1)
+    domain_hint: str | None = None
+    candidate_limit: int = Field(default=8, ge=1, le=50)
+    concept_limit: int = Field(default=3, ge=1, le=10)
+    claim_limit: int = Field(default=6, ge=1, le=20)
+    episode_limit: int = Field(default=3, ge=1, le=10)
+    include_neighborhood: bool = True
+    depth: int = Field(default=1, ge=1, le=2)
+
+
+class LearningContextPrimaryConcept(BaseModel):
+    uid: str
+    canonical_name: str
+    domain: str
+    description: str = ""
+    retrieval_score: float
+    retrieval_reason: str
+    quality_flags: list[str] = Field(default_factory=list)
+
+
+class LearningContextClaim(BaseModel):
+    uid: str
+    text: str
+    confidence: float | None = None
+
+
+class LearningContextEpisode(BaseModel):
+    uid: str
+    text: str
+    status: str
+
+
+class LearningContextDebug(BaseModel):
+    candidate_count: int
+    selected_concept_uids: list[str] = Field(default_factory=list)
+    selection_reasons: list[str] = Field(default_factory=list)
+
+
+class LearningContextResponse(BaseModel):
+    query: str
+    domain_hint: str | None = None
+    status: Literal["ok", "sparse", "no_match"]
+    primary_concepts: list[LearningContextPrimaryConcept] = Field(default_factory=list)
+    relations: list["NeighborhoodRelation"] = Field(default_factory=list)
+    claims: list[LearningContextClaim] = Field(default_factory=list)
+    episodes: list[LearningContextEpisode] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    debug: LearningContextDebug
+
+
+class TutorContextRequest(BaseModel):
+    query: str | None = Field(default=None, min_length=1)
+    episode_id: str | None = Field(default=None, min_length=1)
+    job_id: str | None = Field(default=None, min_length=1)
+    depth: int = Field(default=1, ge=1, le=1)
+    include_evidence: bool = True
+
+    @model_validator(mode="after")
+    def validate_single_reference(self) -> "TutorContextRequest":
+        provided = [name for name, value in (("query", self.query), ("episode_id", self.episode_id), ("job_id", self.job_id)) if value]
+        if len(provided) != 1:
+            raise ValueError("exactly one of query, episode_id or job_id must be provided")
+        return self
+
+
+class TutorContextResolvedReference(BaseModel):
+    input_type: Literal["query", "episode_id", "job_id"]
+    input_value: str
+    resolved_concept_uid: str | None = None
+    resolved_concept_name: str | None = None
+    resolved_episode_id: str | None = None
+    resolved_job_id: str | None = None
+    resolution_reason: str | None = None
+
+
+class TutorContextConcept(BaseModel):
+    uid: str
+    canonical_name: str
+    domain: str
+    description: str = ""
+    aliases: list[str] = Field(default_factory=list)
+
+
+class TutorContextClaim(BaseModel):
+    uid: str
+    text: str
+    confidence: float | None = None
+    evidence_episode_ids: list[str] = Field(default_factory=list)
+
+
+class TutorContextRelation(BaseModel):
+    uid: str
+    from_uid: str
+    from_name: str
+    relation: str
+    to_uid: str
+    to_name: str
+    confidence: float | None = None
+    evidence_episode_ids: list[str] = Field(default_factory=list)
+
+
+class TutorContextSourceFragment(BaseModel):
+    episode_id: str
+    text: str
+    status: str
+    source_type: str
+    tags: list[str] = Field(default_factory=list)
+    language: str
+
+
+class TutorContextEvidence(BaseModel):
+    subject_type: Literal["concept", "claim", "relation"]
+    subject_uid: str
+    episode_id: str
+
+
+class TutorContextBundle(BaseModel):
+    concepts: list[TutorContextConcept] = Field(default_factory=list)
+    claims: list[TutorContextClaim] = Field(default_factory=list)
+    relations: list[TutorContextRelation] = Field(default_factory=list)
+    source_fragments: list[TutorContextSourceFragment] = Field(default_factory=list)
+    evidence: list[TutorContextEvidence] = Field(default_factory=list)
+
+
+class TutorContextResponse(BaseModel):
+    resolved_reference: TutorContextResolvedReference
+    status: Literal["ok", "failed"]
+    concepts: list[TutorContextConcept] = Field(default_factory=list)
+    claims: list[TutorContextClaim] = Field(default_factory=list)
+    relations: list[TutorContextRelation] = Field(default_factory=list)
+    source_fragments: list[TutorContextSourceFragment] = Field(default_factory=list)
+    evidence: list[TutorContextEvidence] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    failure_reason: str | None = None
+
+
+class AgentToolDebug(BaseModel):
+    retrieval_status: Literal["ok", "sparse", "no_match"]
+    used_neighborhood: bool = False
+    generation_mode: Literal["structured_llm", "stub", "skipped"] = "skipped"
+    source_concept_uids: list[str] = Field(default_factory=list)
+    source_claim_uids: list[str] = Field(default_factory=list)
+
+
+class ExplainTopicResponse(BaseModel):
+    query: str
+    domain_hint: str | None = None
+    status: Literal["ok", "sparse", "no_match"]
+    explanation_markdown: str
+    key_points: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+    source_concept_uids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    debug: AgentToolDebug
+
+
+class QuizQuestion(BaseModel):
+    id: str
+    type: Literal["multiple_choice", "open"]
+    prompt: str
+    choices: list[str] = Field(default_factory=list)
+
+
+class QuizAnswerKeyItem(BaseModel):
+    question_id: str
+    correct_answer: str
+    rationale: str
+
+
+class GenerateQuizResponse(BaseModel):
+    query: str
+    domain_hint: str | None = None
+    status: Literal["ok", "sparse", "no_match"]
+    questions: list[QuizQuestion] = Field(default_factory=list)
+    answer_key: list[QuizAnswerKeyItem] = Field(default_factory=list)
+    coverage_summary: str
+    warnings: list[str] = Field(default_factory=list)
+    debug: AgentToolDebug
+
+
+class EvaluateAnswerResponse(BaseModel):
+    query: str
+    status: Literal["ok", "sparse", "no_match"]
+    verdict: Literal["correct", "partial", "incorrect", "unsupported"]
+    score_0_to_1: float = Field(ge=0.0, le=1.0)
+    feedback_markdown: str
+    matched_points: list[str] = Field(default_factory=list)
+    missing_points: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    debug: AgentToolDebug
 
 
 class EpisodeResponse(BaseModel):

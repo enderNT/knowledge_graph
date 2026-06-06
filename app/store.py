@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any, Protocol
 
 import httpx
@@ -19,6 +20,12 @@ from app.schemas import (
     NeighborhoodNode,
     NeighborhoodRelation,
     NeighborhoodResponse,
+    TutorContextBundle,
+    TutorContextClaim,
+    TutorContextConcept,
+    TutorContextEvidence,
+    TutorContextRelation,
+    TutorContextSourceFragment,
     UpsertConceptRequest,
     concept_ref_to_normalized,
 )
@@ -44,6 +51,8 @@ class KnowledgeStore(Protocol):
     async def link_claim_to_episode(self, claim_uid: str, episode_id: str, confidence: float | None = None) -> None: ...
     async def link_claim_to_concept(self, claim_uid: str, concept_uid: str, confidence: float | None = None) -> None: ...
     async def get_neighborhood(self, concept_ref: str, depth: int) -> NeighborhoodResponse | None: ...
+    async def get_tutor_context_for_episode(self, episode_id: str, depth: int = 1) -> TutorContextBundle | None: ...
+    async def get_tutor_context_for_concept(self, concept_ref: str, depth: int = 1) -> TutorContextBundle | None: ...
 
 
 class ArcadeKnowledgeStore:
@@ -566,6 +575,289 @@ class ArcadeKnowledgeStore:
             episodes=list(episodes.values()),
         )
 
+    async def get_tutor_context_for_episode(self, episode_id: str, depth: int = 1) -> TutorContextBundle | None:
+        episode = await self.get_episode(episode_id)
+        if not episode:
+            return None
+
+        concept_rows = await self._safe_query(
+            (
+                "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
+                ".in('MENTIONED_IN'){type: Concept, as: concept} "
+                "RETURN concept.uid as uid, concept.canonical_name as canonical_name, "
+                "concept.domain as domain, coalesce(concept.description, '') as description, "
+                "coalesce(concept.aliases, []) as aliases"
+            ),
+            {"uid": episode_id},
+        )
+        claim_rows = await self._safe_query(
+            (
+                "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
+                ".in('SUPPORTED_BY'){type: Claim, as: claim} "
+                "RETURN claim.uid as uid, claim.text as text, claim.confidence as confidence"
+            ),
+            {"uid": episode_id},
+        )
+
+        concepts: dict[str, TutorContextConcept] = {}
+        for row in concept_rows:
+            concept = self._tutor_concept_from_row(row)
+            concepts[concept.uid] = concept
+
+        claims: dict[str, TutorContextClaim] = {}
+        for row in claim_rows:
+            claim_uid = str(row.get("uid") or "")
+            if not claim_uid:
+                continue
+            claims[claim_uid] = TutorContextClaim(
+                uid=claim_uid,
+                text=str(row.get("text") or ""),
+                confidence=self._as_optional_float(row.get("confidence")),
+                evidence_episode_ids=[episode_id],
+            )
+
+        explained_rows = await self._safe_query(
+            (
+                "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
+                ".in('SUPPORTED_BY'){type: Claim, as: claim}.out('EXPLAINS'){type: Concept, as: concept} "
+                "RETURN claim.uid as claim_uid, concept.uid as uid, concept.canonical_name as canonical_name, "
+                "concept.domain as domain, coalesce(concept.description, '') as description, "
+                "coalesce(concept.aliases, []) as aliases"
+            ),
+            {"uid": episode_id},
+        )
+        for row in explained_rows:
+            concept = self._tutor_concept_from_row(row)
+            concepts.setdefault(concept.uid, concept)
+
+        relations = await self._build_tutor_relations(concepts.keys(), allowed_episode_ids={episode_id})
+        for relation in relations.values():
+            for uid in (relation.from_uid, relation.to_uid):
+                if uid in concepts:
+                    continue
+                related = await self.get_concept(uid)
+                if related:
+                    concepts[uid] = TutorContextConcept(
+                        uid=related.uid,
+                        canonical_name=related.canonical_name,
+                        domain=related.domain,
+                        description=related.description,
+                        aliases=list(related.aliases),
+                    )
+        source_fragments = [self._source_fragment_from_episode(episode)]
+        evidence = self._build_tutor_evidence(
+            concepts=concepts.values(),
+            claims=claims.values(),
+            relations=relations.values(),
+            source_fragments=source_fragments,
+        )
+
+        return TutorContextBundle(
+            concepts=list(concepts.values()),
+            claims=list(claims.values()),
+            relations=list(relations.values()),
+            source_fragments=source_fragments,
+            evidence=evidence,
+        )
+
+    async def get_tutor_context_for_concept(self, concept_ref: str, depth: int = 1) -> TutorContextBundle | None:
+        concept = await self.get_concept(concept_ref)
+        if not concept:
+            return None
+
+        concepts: dict[str, TutorContextConcept] = {
+            concept.uid: TutorContextConcept(
+                uid=concept.uid,
+                canonical_name=concept.canonical_name,
+                domain=concept.domain,
+                description=concept.description,
+                aliases=list(concept.aliases),
+            )
+        }
+        claim_rows = await self._safe_query(
+            (
+                "MATCH {type: Concept, as: concept, where: (uid = :uid)}"
+                ".in('EXPLAINS'){type: Claim, as: claim}.out('SUPPORTED_BY'){type: Episode, as: episode} "
+                "RETURN claim.uid as claim_uid, claim.text as claim_text, claim.confidence as claim_confidence, "
+                "episode.uid as episode_uid, episode.text as episode_text, episode.status as episode_status, "
+                "episode.source_type as episode_source_type, coalesce(episode.tags, []) as episode_tags, "
+                "episode.language as episode_language"
+            ),
+            {"uid": concept.uid},
+        )
+        mention_rows = await self._safe_query(
+            (
+                "MATCH {type: Concept, as: concept, where: (uid = :uid)}"
+                ".out('MENTIONED_IN'){type: Episode, as: episode} "
+                "RETURN episode.uid as episode_uid, episode.text as episode_text, episode.status as episode_status, "
+                "episode.source_type as episode_source_type, coalesce(episode.tags, []) as episode_tags, "
+                "episode.language as episode_language"
+            ),
+            {"uid": concept.uid},
+        )
+
+        claims: dict[str, TutorContextClaim] = {}
+        source_fragments: dict[str, TutorContextSourceFragment] = {}
+        for row in claim_rows:
+            claim_uid = str(row.get("claim_uid") or "")
+            episode_uid = str(row.get("episode_uid") or "")
+            if claim_uid:
+                claim = claims.get(claim_uid)
+                if claim is None:
+                    claims[claim_uid] = TutorContextClaim(
+                        uid=claim_uid,
+                        text=str(row.get("claim_text") or ""),
+                        confidence=self._as_optional_float(row.get("claim_confidence")),
+                        evidence_episode_ids=[episode_uid] if episode_uid else [],
+                    )
+                elif episode_uid and episode_uid not in claim.evidence_episode_ids:
+                    claim.evidence_episode_ids.append(episode_uid)
+            fragment = self._source_fragment_from_row(row)
+            if fragment:
+                source_fragments[fragment.episode_id] = fragment
+
+        for row in mention_rows:
+            fragment = self._source_fragment_from_row(row)
+            if fragment:
+                source_fragments[fragment.episode_id] = fragment
+
+        relations = await self._build_tutor_relations({concept.uid}, allowed_episode_ids=set())
+        for relation in relations.values():
+            for episode_id in relation.evidence_episode_ids:
+                if episode_id in source_fragments:
+                    continue
+                episode = await self.get_episode(episode_id)
+                if episode:
+                    source_fragments[episode_id] = self._source_fragment_from_episode(episode)
+        for relation in relations.values():
+            for uid, name in ((relation.from_uid, relation.from_name), (relation.to_uid, relation.to_name)):
+                if uid in concepts:
+                    continue
+                related = await self.get_concept(uid)
+                if related:
+                    concepts[uid] = TutorContextConcept(
+                        uid=related.uid,
+                        canonical_name=related.canonical_name,
+                        domain=related.domain,
+                        description=related.description,
+                        aliases=list(related.aliases),
+                    )
+
+        evidence = self._build_tutor_evidence(
+            concepts=[concepts[concept.uid]],
+            claims=claims.values(),
+            relations=relations.values(),
+            source_fragments=source_fragments.values(),
+        )
+        return TutorContextBundle(
+            concepts=list(concepts.values()),
+            claims=list(claims.values()),
+            relations=list(relations.values()),
+            source_fragments=list(source_fragments.values()),
+            evidence=evidence,
+        )
+
+    async def _build_tutor_relations(
+        self,
+        concept_uids: Iterable[str],
+        *,
+        allowed_episode_ids: set[str],
+    ) -> dict[str, TutorContextRelation]:
+        concept_uid_set = {str(uid) for uid in concept_uids}
+        relations: dict[str, TutorContextRelation] = {}
+        for concept_uid in concept_uid_set:
+            for row in await self._fetch_neighborhood_edge_rows(str(concept_uid)):
+                relation = self._build_neighborhood_relation(row)
+                if relation is None:
+                    continue
+                if relation.from_uid not in concept_uid_set and relation.to_uid not in concept_uid_set:
+                    continue
+                if relation.evidence_episode_id and allowed_episode_ids and relation.evidence_episode_id not in allowed_episode_ids:
+                    continue
+                relation_id = _tutor_relation_uid(
+                    relation.from_uid,
+                    relation.relation,
+                    relation.to_uid,
+                    relation.evidence_episode_id,
+                )
+                item = relations.get(relation_id)
+                if item is None:
+                    relations[relation_id] = TutorContextRelation(
+                        uid=relation_id,
+                        from_uid=relation.from_uid,
+                        from_name=relation.from_name,
+                        relation=relation.relation,
+                        to_uid=relation.to_uid,
+                        to_name=relation.to_name,
+                        confidence=self._as_optional_float(relation.confidence),
+                        evidence_episode_ids=[relation.evidence_episode_id] if relation.evidence_episode_id else [],
+                    )
+                elif relation.evidence_episode_id and relation.evidence_episode_id not in item.evidence_episode_ids:
+                    item.evidence_episode_ids.append(relation.evidence_episode_id)
+        return relations
+
+    def _tutor_concept_from_row(self, row: dict[str, Any]) -> TutorContextConcept:
+        aliases = row.get("aliases") or []
+        if not isinstance(aliases, list):
+            aliases = []
+        return TutorContextConcept(
+            uid=str(row.get("uid") or ""),
+            canonical_name=str(row.get("canonical_name") or ""),
+            domain=str(row.get("domain") or ""),
+            description=str(row.get("description") or ""),
+            aliases=[str(alias) for alias in aliases],
+        )
+
+    def _source_fragment_from_episode(self, episode: EpisodeRecord) -> TutorContextSourceFragment:
+        return TutorContextSourceFragment(
+            episode_id=episode.uid,
+            text=episode.text,
+            status=episode.status,
+            source_type=episode.source_type,
+            tags=list(episode.tags),
+            language=episode.language,
+        )
+
+    def _source_fragment_from_row(self, row: dict[str, Any]) -> TutorContextSourceFragment | None:
+        episode_id = str(row.get("episode_uid") or "")
+        if not episode_id:
+            return None
+        tags = row.get("episode_tags") or []
+        if not isinstance(tags, list):
+            tags = []
+        return TutorContextSourceFragment(
+            episode_id=episode_id,
+            text=str(row.get("episode_text") or ""),
+            status=str(row.get("episode_status") or ""),
+            source_type=str(row.get("episode_source_type") or "manual_input"),
+            tags=[str(tag) for tag in tags],
+            language=str(row.get("episode_language") or "es"),
+        )
+
+    def _build_tutor_evidence(
+        self,
+        *,
+        concepts: Any,
+        claims: Any,
+        relations: Any,
+        source_fragments: Any,
+    ) -> list[TutorContextEvidence]:
+        fragment_ids = {fragment.episode_id for fragment in source_fragments}
+        evidence: dict[tuple[str, str, str], TutorContextEvidence] = {}
+        for concept in concepts:
+            for episode_id in fragment_ids:
+                key = ("concept", concept.uid, episode_id)
+                evidence[key] = TutorContextEvidence(subject_type="concept", subject_uid=concept.uid, episode_id=episode_id)
+        for claim in claims:
+            for episode_id in claim.evidence_episode_ids:
+                key = ("claim", claim.uid, episode_id)
+                evidence[key] = TutorContextEvidence(subject_type="claim", subject_uid=claim.uid, episode_id=episode_id)
+        for relation in relations:
+            for episode_id in relation.evidence_episode_ids:
+                key = ("relation", relation.uid, episode_id)
+                evidence[key] = TutorContextEvidence(subject_type="relation", subject_uid=relation.uid, episode_id=episode_id)
+        return list(evidence.values())
+
     async def _fetch_neighborhood_edge_rows(self, concept_uid: str) -> list[dict[str, Any]]:
         outgoing = await self._safe_query(
             (
@@ -777,6 +1069,15 @@ class ArcadeKnowledgeStore:
 
         self._embedding_dimensions_cache = self.settings.embedding_dimensions
         return self._embedding_dimensions_cache
+
+    @staticmethod
+    def _as_optional_float(value: object) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _job_from_row(self, row: dict[str, Any]) -> JobRecord:
         result = row.get("result")
@@ -1086,6 +1387,128 @@ class InMemoryKnowledgeStore:
             episodes=list(episodes.values()),
         )
 
+    async def get_tutor_context_for_episode(self, episode_id: str, depth: int = 1) -> TutorContextBundle | None:
+        episode = self.episodes.get(episode_id)
+        if episode is None:
+            return None
+
+        concepts: dict[str, TutorContextConcept] = {}
+        for concept_uid, mentioned_episode_id in self.concept_mentions:
+            if mentioned_episode_id != episode_id:
+                continue
+            concept = self.concepts.get(concept_uid)
+            if concept:
+                concepts[concept.uid] = _tutor_context_concept(concept)
+
+        claims: dict[str, TutorContextClaim] = {}
+        for claim_uid, supported_episode_id in self.claim_support:
+            if supported_episode_id != episode_id:
+                continue
+            claim = self.claims.get(claim_uid)
+            if claim is None:
+                continue
+            claims[claim.uid] = TutorContextClaim(
+                uid=claim.uid,
+                text=claim.text,
+                confidence=claim.confidence,
+                evidence_episode_ids=[episode_id],
+            )
+            for explained_claim_uid, concept_uid in self.claim_explains:
+                if explained_claim_uid != claim_uid:
+                    continue
+                concept = self.concepts.get(concept_uid)
+                if concept:
+                    concepts[concept.uid] = _tutor_context_concept(concept)
+
+        relations = _in_memory_tutor_relations(self, set(concepts), allowed_episode_ids={episode_id})
+        for relation in relations.values():
+            for related_uid in (relation.from_uid, relation.to_uid):
+                if related_uid in concepts:
+                    continue
+                related = self.concepts.get(related_uid)
+                if related:
+                    concepts[related.uid] = _tutor_context_concept(related)
+        source_fragments = [_source_fragment_from_episode_record(episode)]
+        evidence = _build_tutor_evidence(
+            concepts=concepts.values(),
+            claims=claims.values(),
+            relations=relations.values(),
+            source_fragments=source_fragments,
+        )
+        return TutorContextBundle(
+            concepts=list(concepts.values()),
+            claims=list(claims.values()),
+            relations=list(relations.values()),
+            source_fragments=source_fragments,
+            evidence=evidence,
+        )
+
+    async def get_tutor_context_for_concept(self, concept_ref: str, depth: int = 1) -> TutorContextBundle | None:
+        concept = await self.get_concept(concept_ref)
+        if concept is None:
+            return None
+
+        concepts: dict[str, TutorContextConcept] = {concept.uid: _tutor_context_concept(concept)}
+        claims: dict[str, TutorContextClaim] = {}
+        source_fragments: dict[str, TutorContextSourceFragment] = {}
+
+        for claim_uid, concept_uid in self.claim_explains:
+            if concept_uid != concept.uid:
+                continue
+            claim = self.claims.get(claim_uid)
+            if claim is None:
+                continue
+            evidence_episode_ids = sorted(
+                episode_id for supported_claim_uid, episode_id in self.claim_support if supported_claim_uid == claim_uid
+            )
+            claims[claim.uid] = TutorContextClaim(
+                uid=claim.uid,
+                text=claim.text,
+                confidence=claim.confidence,
+                evidence_episode_ids=evidence_episode_ids,
+            )
+            for episode_id in evidence_episode_ids:
+                episode = self.episodes.get(episode_id)
+                if episode:
+                    source_fragments[episode_id] = _source_fragment_from_episode_record(episode)
+
+        for concept_uid, episode_id in self.concept_mentions:
+            if concept_uid != concept.uid:
+                continue
+            episode = self.episodes.get(episode_id)
+            if episode:
+                source_fragments[episode_id] = _source_fragment_from_episode_record(episode)
+
+        relations = _in_memory_tutor_relations(self, {concept.uid}, allowed_episode_ids=set())
+        for relation in relations.values():
+            for episode_id in relation.evidence_episode_ids:
+                if episode_id in source_fragments:
+                    continue
+                episode = self.episodes.get(episode_id)
+                if episode:
+                    source_fragments[episode_id] = _source_fragment_from_episode_record(episode)
+        for relation in relations.values():
+            for related_uid in (relation.from_uid, relation.to_uid):
+                if related_uid in concepts:
+                    continue
+                related = self.concepts.get(related_uid)
+                if related:
+                    concepts[related.uid] = _tutor_context_concept(related)
+
+        evidence = _build_tutor_evidence(
+            concepts=[concepts[concept.uid]],
+            claims=claims.values(),
+            relations=relations.values(),
+            source_fragments=source_fragments.values(),
+        )
+        return TutorContextBundle(
+            concepts=list(concepts.values()),
+            claims=list(claims.values()),
+            relations=list(relations.values()),
+            source_fragments=list(source_fragments.values()),
+            evidence=evidence,
+        )
+
 
 def _merge_alias_lists(existing: list[str], incoming: list[str]) -> list[str]:
     merged: list[str] = []
@@ -1097,3 +1520,96 @@ def _merge_alias_lists(existing: list[str], incoming: list[str]) -> list[str]:
         merged.append(alias)
         seen.add(key)
     return merged
+
+
+def _tutor_context_concept(concept: ConceptRecord) -> TutorContextConcept:
+    return TutorContextConcept(
+        uid=concept.uid,
+        canonical_name=concept.canonical_name,
+        domain=concept.domain,
+        description=concept.description,
+        aliases=list(concept.aliases),
+    )
+
+
+def _source_fragment_from_episode_record(episode: EpisodeRecord) -> TutorContextSourceFragment:
+    return TutorContextSourceFragment(
+        episode_id=episode.uid,
+        text=episode.text,
+        status=episode.status,
+        source_type=episode.source_type,
+        tags=list(episode.tags),
+        language=episode.language,
+    )
+
+
+def _in_memory_tutor_relations(
+    store: InMemoryKnowledgeStore,
+    concept_uids: set[str],
+    *,
+    allowed_episode_ids: set[str],
+) -> dict[str, TutorContextRelation]:
+    relations: dict[str, TutorContextRelation] = {}
+    for from_uid, relation, to_uid, evidence_episode_id in store.relations:
+        if from_uid not in concept_uids and to_uid not in concept_uids:
+            continue
+        if evidence_episode_id and allowed_episode_ids and evidence_episode_id not in allowed_episode_ids:
+            continue
+        relation_id = _tutor_relation_uid(from_uid, relation, to_uid, evidence_episode_id)
+        item = relations.get(relation_id)
+        if item is None:
+            relations[relation_id] = TutorContextRelation(
+                uid=relation_id,
+                from_uid=from_uid,
+                from_name=store.concepts[from_uid].canonical_name,
+                relation=relation,
+                to_uid=to_uid,
+                to_name=store.concepts[to_uid].canonical_name,
+                confidence=None,
+                evidence_episode_ids=[evidence_episode_id] if evidence_episode_id else [],
+            )
+        elif evidence_episode_id and evidence_episode_id not in item.evidence_episode_ids:
+            item.evidence_episode_ids.append(evidence_episode_id)
+    return relations
+
+
+def _build_tutor_evidence(
+    *,
+    concepts: Any,
+    claims: Any,
+    relations: Any,
+    source_fragments: Any,
+) -> list[TutorContextEvidence]:
+    fragment_ids = {fragment.episode_id for fragment in source_fragments}
+    evidence: dict[tuple[str, str, str], TutorContextEvidence] = {}
+    for concept in concepts:
+        for episode_id in fragment_ids:
+            evidence[("concept", concept.uid, episode_id)] = TutorContextEvidence(
+                subject_type="concept",
+                subject_uid=concept.uid,
+                episode_id=episode_id,
+            )
+    for claim in claims:
+        for episode_id in claim.evidence_episode_ids:
+            evidence[("claim", claim.uid, episode_id)] = TutorContextEvidence(
+                subject_type="claim",
+                subject_uid=claim.uid,
+                episode_id=episode_id,
+            )
+    for relation in relations:
+        for episode_id in relation.evidence_episode_ids:
+            evidence[("relation", relation.uid, episode_id)] = TutorContextEvidence(
+                subject_type="relation",
+                subject_uid=relation.uid,
+                episode_id=episode_id,
+            )
+    return list(evidence.values())
+
+
+def _tutor_relation_uid(
+    from_uid: str,
+    relation: str,
+    to_uid: str,
+    evidence_episode_id: str | None,
+) -> str:
+    return "|".join([from_uid, relation, to_uid, evidence_episode_id or ""])

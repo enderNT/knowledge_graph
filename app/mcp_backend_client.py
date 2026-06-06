@@ -93,6 +93,54 @@ class MCPBackendClient:
             json={"query": query, "domain_hint": domain_hint, "limit": limit},
         )
 
+    async def get_learning_context(
+        self,
+        *,
+        query: str,
+        domain_hint: str | None = None,
+        candidate_limit: int = 8,
+        concept_limit: int = 3,
+        claim_limit: int = 6,
+        episode_limit: int = 3,
+        include_neighborhood: bool = True,
+        depth: int = 1,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/search/learning-context",
+            json={
+                "query": query,
+                "domain_hint": domain_hint,
+                "candidate_limit": candidate_limit,
+                "concept_limit": concept_limit,
+                "claim_limit": claim_limit,
+                "episode_limit": episode_limit,
+                "include_neighborhood": include_neighborhood,
+                "depth": depth,
+            },
+        )
+
+    async def get_tutor_context(
+        self,
+        *,
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        depth: int = 1,
+        include_evidence: bool = True,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/search/tutor-context",
+            json={
+                "query": query,
+                "episode_id": episode_id,
+                "job_id": job_id,
+                "depth": depth,
+                "include_evidence": include_evidence,
+            },
+        )
+
     async def upsert_concept(
         self,
         *,
