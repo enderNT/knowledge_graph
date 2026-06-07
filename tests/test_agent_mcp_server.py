@@ -279,6 +279,59 @@ class FakeKnowledgeBackendClient:
             "warnings": [],
         }
 
+    async def get_sr_state(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "state": {
+                "user_id": kwargs["user_id"],
+                "concept_uid": kwargs["concept_uid"],
+                "dimension": kwargs["dimension"],
+                "repetitions": 1,
+                "ease_factor": 2.5,
+                "interval_days": 1,
+                "last_reviewed_at": "2026-06-06T10:00:00+00:00",
+                "next_review_at": "2026-06-07T10:00:00+00:00",
+                "propagation_relief_count": 0,
+                "requires_direct_validation": False,
+                "updated_at": "2026-06-06T10:00:00+00:00",
+            }
+        }
+
+    async def get_due_sr_items(self, **kwargs: Any) -> dict[str, Any]:
+        return {"user_id": kwargs["user_id"], "items": []}
+
+    async def update_sr_from_block_result(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "state": {
+                "user_id": kwargs["user_id"],
+                "concept_uid": kwargs["concept_uid"],
+                "dimension": kwargs["dimension"],
+                "repetitions": 1,
+                "ease_factor": 2.5,
+                "interval_days": 1,
+                "last_reviewed_at": "2026-06-06T10:00:00+00:00",
+                "next_review_at": "2026-06-07T10:00:00+00:00",
+                "propagation_relief_count": 0,
+                "requires_direct_validation": False,
+                "updated_at": "2026-06-06T10:00:00+00:00",
+            },
+            "sr_feedback": {
+                "concept_uid": kwargs["concept_uid"],
+                "dimension": kwargs["dimension"],
+                "calculated_quality_q": 5,
+                "rationale": "Respuesta correcta directa sin apoyo",
+            },
+            "ef_bonus_applied": False,
+        }
+
+    async def apply_prereq_relief(self, **_: Any) -> dict[str, Any]:
+        return {"updated_states": []}
+
+    async def get_sr_stats(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "user_id": kwargs["user_id"],
+            "stats": {"total_items": 1, "due_items": 0, "forced_review_items": 0, "average_ease_factor": 2.5},
+        }
+
     async def start_adaptive_session(self, **kwargs: Any) -> dict[str, Any]:
         tutor_context = await self.get_tutor_context(
             query=kwargs.get("query"),
@@ -501,7 +554,7 @@ async def client_session(
 
 
 @pytest.mark.anyio
-async def test_agent_mcp_exposes_exactly_eighteen_tools(client_session):
+async def test_agent_mcp_exposes_exactly_twenty_three_tools(client_session):
     tools = await client_session.list_tools()
     assert sorted(tool.name for tool in tools.tools) == [
         "evaluate_answer",
@@ -518,6 +571,11 @@ async def test_agent_mcp_exposes_exactly_eighteen_tools(client_session):
         "kg_get_tutor_context",
         "kg_link_concepts",
         "kg_search_candidates",
+        "kg_sr_apply_relief",
+        "kg_sr_get_due_items",
+        "kg_sr_get_state",
+        "kg_sr_get_stats",
+        "kg_sr_update_from_block",
         "kg_update_pedagogical_context",
         "kg_upsert_concept",
         "start_adaptive_session",
@@ -529,6 +587,7 @@ async def test_agent_mcp_exposes_exactly_eighteen_tools(client_session):
     assert tool_map["explain_topic"].inputSchema["properties"]["audience"]["default"] == "intermediate"
     assert tool_map["kg_get_tutor_context"].inputSchema["properties"]["depth"]["default"] == 1
     assert tool_map["kg_get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
+    assert tool_map["kg_sr_get_state"].inputSchema["properties"]["concept_uid"]["type"] == "string"
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
     assert "from" in tool_map["kg_link_concepts"].inputSchema["properties"]
     assert tool_map["kg_upsert_concept"].inputSchema["properties"]["uid"]["type"] == "string"
@@ -644,6 +703,12 @@ async def test_agent_passthrough_tools_preserve_shape_and_from_alias(
         {"user_id": "user-1"},
     )
     assert pedagogical_context.structuredContent["user_id"] == "user-1"
+
+    sr_state = await client_session.call_tool(
+        "kg_sr_get_state",
+        {"user_id": "user-1", "concept_uid": "cn_1", "dimension": "recognition"},
+    )
+    assert sr_state.structuredContent["state"]["concept_uid"] == "cn_1"
 
     pedagogical_update = await client_session.call_tool(
         "kg_update_pedagogical_context",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
@@ -32,12 +33,14 @@ from app.schemas import (
     NeighborhoodRelation,
     NeighborhoodResponse,
     PEDAGOGICAL_RELATIONS,
+    DueSRItem,
     PedagogicalConceptState,
     PedagogicalDimensionStates,
     PedagogicalDomainState,
     PedagogicalEvaluationEvent,
     PedagogicalRecentStats,
     PedagogicalRecalculationTrace,
+    SpacedRepetitionState,
     TutorContextBundle,
     TutorContextClaim,
     TutorContextConcept,
@@ -79,6 +82,18 @@ class KnowledgeStore(Protocol):
     async def upsert_pedagogical_concept_state(self, state: PedagogicalConceptState) -> None: ...
     async def upsert_pedagogical_domain_state(self, state: PedagogicalDomainState) -> None: ...
     async def append_pedagogical_evaluation_event(self, event: PedagogicalEvaluationEvent) -> None: ...
+    async def get_spaced_repetition_state(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+    ) -> SpacedRepetitionState | None: ...
+    async def upsert_spaced_repetition_state(self, state: SpacedRepetitionState) -> None: ...
+    async def list_spaced_repetition_states(self, *, user_id: str) -> list[SpacedRepetitionState]: ...
+    async def list_due_spaced_repetition_items(self, *, user_id: str, now_iso: str) -> list[DueSRItem]: ...
+    async def list_forced_spaced_repetition_states(self, *, user_id: str) -> list[SpacedRepetitionState]: ...
+    async def get_prerequisite_parent_concepts(self, *, concept_uid: str) -> list[str]: ...
     async def get_pedagogical_related_concepts(
         self,
         *,
@@ -1085,6 +1100,131 @@ class ArcadeKnowledgeStore:
             },
         )
 
+    async def get_spaced_repetition_state(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+    ) -> SpacedRepetitionState | None:
+        rows = await self._safe_query(
+            (
+                "SELECT user_id, concept_uid, dimension, repetitions, ease_factor, interval_days, "
+                "last_reviewed_at, next_review_at, propagation_relief_count, requires_direct_validation, updated_at "
+                "FROM UserSpacedRepetition WHERE user_id = :user_id AND concept_uid = :concept_uid "
+                "AND dimension = :dimension LIMIT 1"
+            ),
+            {"user_id": user_id, "concept_uid": concept_uid, "dimension": dimension},
+        )
+        if not rows:
+            return None
+        return SpacedRepetitionState.model_validate(rows[0])
+
+    async def upsert_spaced_repetition_state(self, state: SpacedRepetitionState) -> None:
+        payload = state.model_dump()
+        rows = await self._safe_query(
+            (
+                "SELECT user_id FROM UserSpacedRepetition WHERE user_id = :user_id "
+                "AND concept_uid = :concept_uid AND dimension = :dimension LIMIT 1"
+            ),
+            {
+                "user_id": state.user_id,
+                "concept_uid": state.concept_uid,
+                "dimension": state.dimension,
+            },
+        )
+        if rows:
+            await self.client.command(
+                (
+                    "UPDATE UserSpacedRepetition SET repetitions = :repetitions, ease_factor = :ease_factor, "
+                    "interval_days = :interval_days, last_reviewed_at = :last_reviewed_at, "
+                    "next_review_at = :next_review_at, propagation_relief_count = :propagation_relief_count, "
+                    "requires_direct_validation = :requires_direct_validation, updated_at = :updated_at "
+                    "WHERE user_id = :user_id AND concept_uid = :concept_uid AND dimension = :dimension"
+                ),
+                payload,
+            )
+            return
+        await self.client.command(
+            (
+                "INSERT INTO UserSpacedRepetition SET user_id = :user_id, concept_uid = :concept_uid, "
+                "dimension = :dimension, repetitions = :repetitions, ease_factor = :ease_factor, "
+                "interval_days = :interval_days, last_reviewed_at = :last_reviewed_at, "
+                "next_review_at = :next_review_at, propagation_relief_count = :propagation_relief_count, "
+                "requires_direct_validation = :requires_direct_validation, updated_at = :updated_at"
+            ),
+            payload,
+        )
+
+    async def list_spaced_repetition_states(self, *, user_id: str) -> list[SpacedRepetitionState]:
+        rows = await self._safe_query(
+            (
+                "SELECT user_id, concept_uid, dimension, repetitions, ease_factor, interval_days, "
+                "last_reviewed_at, next_review_at, propagation_relief_count, requires_direct_validation, updated_at "
+                "FROM UserSpacedRepetition WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id},
+        )
+        return [SpacedRepetitionState.model_validate(row) for row in rows]
+
+    async def list_due_spaced_repetition_items(self, *, user_id: str, now_iso: str) -> list[DueSRItem]:
+        states = [
+            state
+            for state in await self.list_spaced_repetition_states(user_id=user_id)
+            if state.next_review_at <= now_iso
+        ]
+        context = await self.get_pedagogical_context(user_id=user_id)
+        context_map = {state.concept_uid: state for state in context.concepts}
+        now_dt = _parse_iso_datetime(now_iso)
+        due_items: list[DueSRItem] = []
+        for state in states:
+            concept_state = context_map.get(state.concept_uid)
+            concept_name = concept_state.concept_name if concept_state else ""
+            domain = concept_state.domain if concept_state else ""
+            if not concept_name or not domain:
+                concept = await self.get_concept(state.concept_uid)
+                if concept is not None:
+                    concept_name = concept_name or concept.canonical_name
+                    domain = domain or concept.domain
+            due_items.append(
+                DueSRItem(
+                    concept_uid=state.concept_uid,
+                    dimension=state.dimension,
+                    next_review_at=state.next_review_at,
+                    days_overdue=max(
+                        0,
+                        int((now_dt - _parse_iso_datetime(state.next_review_at)).total_seconds() // 86400),
+                    ),
+                    concept_name=concept_name,
+                    domain=domain,
+                    mastery_score_0_to_100=concept_state.mastery_score_0_to_100 if concept_state else 50.0,
+                    confidence_0_to_1=concept_state.confidence_0_to_1 if concept_state else 0.25,
+                    requires_direct_validation=state.requires_direct_validation,
+                )
+            )
+        due_items.sort(
+            key=lambda item: (
+                -item.days_overdue,
+                item.mastery_score_0_to_100,
+                item.confidence_0_to_1,
+            )
+        )
+        return due_items
+
+    async def list_forced_spaced_repetition_states(self, *, user_id: str) -> list[SpacedRepetitionState]:
+        states = await self.list_spaced_repetition_states(user_id=user_id)
+        return [state for state in states if state.requires_direct_validation]
+
+    async def get_prerequisite_parent_concepts(self, *, concept_uid: str) -> list[str]:
+        parent_uids: list[str] = []
+        for row in await self._fetch_neighborhood_edge_rows(concept_uid):
+            relation = str(row.get("relation") or "")
+            from_uid = str(row.get("from_uid") or "")
+            to_uid = str(row.get("to_uid") or "")
+            if relation == "PREREQUISITE_FOR" and to_uid == concept_uid and from_uid:
+                parent_uids.append(from_uid)
+        return parent_uids
+
     async def get_pedagogical_related_concepts(
         self,
         *,
@@ -1647,6 +1787,7 @@ class InMemoryKnowledgeStore:
         self.user_concept_mastery: dict[tuple[str, str], PedagogicalConceptState] = {}
         self.user_domain_mastery: dict[tuple[str, str], PedagogicalDomainState] = {}
         self.user_evaluation_events: dict[str, list[PedagogicalEvaluationEvent]] = {}
+        self.user_spaced_repetition: dict[tuple[str, str, str], SpacedRepetitionState] = {}
         self.adaptive_sessions: dict[str, AdaptiveSessionSnapshot] = {}
         self.adaptive_block_attempts: dict[str, dict[str, Any]] = {}
 
@@ -2199,6 +2340,75 @@ class InMemoryKnowledgeStore:
         items.append(event)
         items.sort(key=lambda item: item.recorded_at)
 
+    async def get_spaced_repetition_state(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+    ) -> SpacedRepetitionState | None:
+        return self.user_spaced_repetition.get((user_id, concept_uid, dimension))
+
+    async def upsert_spaced_repetition_state(self, state: SpacedRepetitionState) -> None:
+        self.user_spaced_repetition[(state.user_id, state.concept_uid, state.dimension)] = state
+
+    async def list_spaced_repetition_states(self, *, user_id: str) -> list[SpacedRepetitionState]:
+        return [
+            state
+            for (stored_user_id, _, _), state in self.user_spaced_repetition.items()
+            if stored_user_id == user_id
+        ]
+
+    async def list_due_spaced_repetition_items(self, *, user_id: str, now_iso: str) -> list[DueSRItem]:
+        context = await self.get_pedagogical_context(user_id=user_id)
+        context_map = {state.concept_uid: state for state in context.concepts}
+        now_dt = _parse_iso_datetime(now_iso)
+        items: list[DueSRItem] = []
+        for state in await self.list_spaced_repetition_states(user_id=user_id):
+            if state.next_review_at > now_iso:
+                continue
+            concept_state = context_map.get(state.concept_uid)
+            concept_name = concept_state.concept_name if concept_state else ""
+            domain = concept_state.domain if concept_state else ""
+            concept = self.concepts.get(state.concept_uid)
+            if concept is not None:
+                concept_name = concept_name or concept.canonical_name
+                domain = domain or concept.domain
+            items.append(
+                DueSRItem(
+                    concept_uid=state.concept_uid,
+                    dimension=state.dimension,
+                    next_review_at=state.next_review_at,
+                    days_overdue=max(
+                        0,
+                        int((now_dt - _parse_iso_datetime(state.next_review_at)).total_seconds() // 86400),
+                    ),
+                    concept_name=concept_name,
+                    domain=domain,
+                    mastery_score_0_to_100=concept_state.mastery_score_0_to_100 if concept_state else 50.0,
+                    confidence_0_to_1=concept_state.confidence_0_to_1 if concept_state else 0.25,
+                    requires_direct_validation=state.requires_direct_validation,
+                )
+            )
+        items.sort(
+            key=lambda item: (
+                -item.days_overdue,
+                item.mastery_score_0_to_100,
+                item.confidence_0_to_1,
+            )
+        )
+        return items
+
+    async def list_forced_spaced_repetition_states(self, *, user_id: str) -> list[SpacedRepetitionState]:
+        return [state for state in await self.list_spaced_repetition_states(user_id=user_id) if state.requires_direct_validation]
+
+    async def get_prerequisite_parent_concepts(self, *, concept_uid: str) -> list[str]:
+        parent_uids: list[str] = []
+        for from_uid, relation, to_uid, _ in self.relations:
+            if relation == "PREREQUISITE_FOR" and to_uid == concept_uid:
+                parent_uids.append(from_uid)
+        return parent_uids
+
     async def get_pedagogical_related_concepts(
         self,
         *,
@@ -2264,6 +2474,13 @@ def _merge_alias_lists(existing: list[str], incoming: list[str]) -> list[str]:
         merged.append(alias)
         seen.add(key)
     return merged
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _build_candidate_hit_from_row(*, row: dict[str, Any], normalized_query: str) -> CandidateHit | None:

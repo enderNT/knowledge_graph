@@ -14,6 +14,7 @@ from app.schemas import (
     PedagogicalDimensionState,
     PedagogicalDimensionStates,
     PedagogicalRecentStats,
+    SpacedRepetitionState,
     UpsertConceptRequest,
 )
 
@@ -63,6 +64,18 @@ def _seed_claim_and_episode(store, provider, *, claim_text: str, concept_uids: l
 
 def _make_service(settings, store) -> AdaptiveLearningService:
     return AdaptiveLearningService(settings=settings, store=store, ai_provider=StubAIProvider(settings))
+
+
+def _build_block_submissions(block: dict) -> list[dict]:
+    submissions = []
+    for answer_key in block["answer_keys"]:
+        if answer_key["correct_choice_indexes"]:
+            submissions.append({"item_id": answer_key["item_id"], "selected_choices": answer_key["correct_choice_indexes"]})
+        elif answer_key["boolean_answer"] is not None:
+            submissions.append({"item_id": answer_key["item_id"], "boolean_answer": answer_key["boolean_answer"]})
+        else:
+            submissions.append({"item_id": answer_key["item_id"], "response_text": answer_key["expected"][0]})
+    return submissions
 
 
 def test_adaptive_endpoints_require_api_key(client):
@@ -330,3 +343,147 @@ def test_adaptive_service_scores_multi_cloze_and_open(settings, store):
     )
     assert open_result.verdict in {"partial_high", "correct"}
     assert open_result.score_0_to_1 < 1.0
+
+
+def test_adaptive_session_uses_review_quota_when_due_queue_is_saturated(client, auth_headers, settings, store):
+    provider = StubAIProvider(settings)
+    concepts = []
+    for index in range(4):
+        concept = _seed_concept(
+            store,
+            provider,
+            canonical_name=f"Concepto SR {index}",
+            aliases=[f"concepto-sr-{index}"],
+            domain="Psicología",
+            description=f"Descripcion {index}.",
+        )
+        _seed_claim_and_episode(
+            store,
+            provider,
+            claim_text=f"Claim de soporte {index} para repeticion espaciada.",
+            concept_uids=[concept.uid],
+            episode_text=f"Episodio de soporte {index}.",
+            episode_id=f"ep_sr_{index}",
+        )
+        concepts.append(concept)
+
+    async def seed_sr():
+        for concept in concepts:
+            await store.upsert_spaced_repetition_state(
+                SpacedRepetitionState(
+                    user_id="user-review",
+                    concept_uid=concept.uid,
+                    dimension="recall",
+                    repetitions=1,
+                    ease_factor=2.5,
+                    interval_days=1,
+                    last_reviewed_at=None,
+                    next_review_at="2026-06-01T10:00:00+00:00",
+                    propagation_relief_count=0,
+                    requires_direct_validation=False,
+                    updated_at="2026-06-06T10:00:00+00:00",
+                )
+            )
+
+    asyncio.run(seed_sr())
+
+    start = client.post(
+        "/v1/adaptive/sessions/start",
+        headers=auth_headers,
+        json={"user_id": "user-review", "query": "concepto-sr-0"},
+    )
+    assert start.status_code == 200
+    body = start.json()
+    assert body["session"]["summary"]["review_blocks_target"] == 3
+    assert body["session"]["summary"]["new_blocks_target"] == 1
+    assert body["current_block"]["plan"]["block_purpose"] == "spaced_repetition_review"
+    assert body["current_block"]["plan"]["due_item"]["concept_uid"] in {concept.uid for concept in concepts}
+
+    submit = client.post(
+        f"/v1/adaptive/sessions/{body['session']['session_id']}/submit",
+        headers=auth_headers,
+        json={"block_id": body["current_block"]["block_id"], "submissions": _build_block_submissions(body["current_block"])},
+    )
+    assert submit.status_code == 200
+    assert submit.json()["block_result"]["sr_feedback"] is not None
+
+
+def test_adaptive_session_prioritizes_requires_direct_validation_before_regular_due(client, auth_headers, settings, store):
+    provider = StubAIProvider(settings)
+    forced = _seed_concept(
+        store,
+        provider,
+        canonical_name="Concepto Forzado",
+        aliases=["concepto forzado"],
+        domain="Psicología",
+        description="Debe validarse directo.",
+    )
+    due = _seed_concept(
+        store,
+        provider,
+        canonical_name="Concepto Due",
+        aliases=["concepto due"],
+        domain="Psicología",
+        description="Esta vencido.",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="Soporte del concepto forzado.",
+        concept_uids=[forced.uid],
+        episode_text="Episodio forzado.",
+        episode_id="ep_forzado",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="Soporte del concepto due.",
+        concept_uids=[due.uid],
+        episode_text="Episodio due.",
+        episode_id="ep_due",
+    )
+
+    async def seed_sr():
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-forced",
+                concept_uid=forced.uid,
+                dimension="application",
+                repetitions=2,
+                ease_factor=2.5,
+                interval_days=6,
+                last_reviewed_at="2026-06-01T10:00:00+00:00",
+                next_review_at="2026-06-20T10:00:00+00:00",
+                propagation_relief_count=2,
+                requires_direct_validation=True,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-forced",
+                concept_uid=due.uid,
+                dimension="recall",
+                repetitions=1,
+                ease_factor=2.5,
+                interval_days=1,
+                last_reviewed_at=None,
+                next_review_at="2026-06-01T10:00:00+00:00",
+                propagation_relief_count=0,
+                requires_direct_validation=False,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+
+    asyncio.run(seed_sr())
+
+    start = client.post(
+        "/v1/adaptive/sessions/start",
+        headers=auth_headers,
+        json={"user_id": "user-forced", "query": "concepto due"},
+    )
+    assert start.status_code == 200
+    body = start.json()
+    assert body["current_block"]["plan"]["block_purpose"] == "spaced_repetition_review"
+    assert body["current_block"]["plan"]["due_item"]["concept_uid"] == forced.uid
+    assert body["current_block"]["plan"]["due_item"]["requires_direct_validation"] is True

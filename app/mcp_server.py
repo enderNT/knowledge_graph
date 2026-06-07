@@ -127,6 +127,50 @@ class MCPBackendProtocol(Protocol):
         query: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def get_sr_state(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+    ) -> dict[str, Any]: ...
+
+    async def get_due_sr_items(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]: ...
+
+    async def update_sr_from_block_result(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+        block_verdict: str,
+        block_difficulty: str,
+        hint_used: bool = False,
+        retry_used: bool = False,
+        coverage: float = 0.0,
+        precision: float = 0.0,
+        was_direct_evaluation: bool = True,
+    ) -> dict[str, Any]: ...
+
+    async def apply_prereq_relief(
+        self,
+        *,
+        user_id: str,
+        source_concept_uid: str,
+        source_dimension: str,
+        quality_q: int,
+    ) -> dict[str, Any]: ...
+
+    async def get_sr_stats(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]: ...
+
     async def start_adaptive_session(
         self,
         *,
@@ -383,6 +427,90 @@ def create_mcp_server(
                 concept_uids=concept_uids,
                 query=query,
             )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="get_sr_state")
+    async def get_sr_state(
+        user_id: Annotated[str, Field(min_length=1)],
+        concept_uid: Annotated[str, Field(min_length=1)],
+        dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
+    ) -> dict[str, Any]:
+        """Fetch spaced repetition state for one concept-dimension."""
+        try:
+            return await backend.get_sr_state(
+                user_id=user_id,
+                concept_uid=concept_uid,
+                dimension=dimension,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="get_due_sr_items")
+    async def get_due_sr_items(
+        user_id: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        """Fetch sorted due spaced repetition items for a user."""
+        try:
+            return await backend.get_due_sr_items(user_id=user_id)
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="update_sr_from_block_result")
+    async def update_sr_from_block_result(
+        user_id: Annotated[str, Field(min_length=1)],
+        concept_uid: Annotated[str, Field(min_length=1)],
+        dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
+        block_verdict: Annotated[str, Field(pattern="^(correct|partial_high|partial_low|incorrect|unsupported)$")],
+        block_difficulty: Annotated[str, Field(pattern="^(introductory|intermediate|advanced)$")],
+        hint_used: bool = False,
+        retry_used: bool = False,
+        coverage: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        precision: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        was_direct_evaluation: bool = True,
+    ) -> dict[str, Any]:
+        """Apply deterministic q mapping and persist updated SR state."""
+        try:
+            return await backend.update_sr_from_block_result(
+                user_id=user_id,
+                concept_uid=concept_uid,
+                dimension=dimension,
+                block_verdict=block_verdict,
+                block_difficulty=block_difficulty,
+                hint_used=hint_used,
+                retry_used=retry_used,
+                coverage=coverage,
+                precision=precision,
+                was_direct_evaluation=was_direct_evaluation,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="apply_prereq_relief")
+    async def apply_prereq_relief(
+        user_id: Annotated[str, Field(min_length=1)],
+        source_concept_uid: Annotated[str, Field(min_length=1)],
+        source_dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
+        quality_q: Annotated[int, Field(ge=0, le=5)],
+    ) -> dict[str, Any]:
+        """Apply prerequisite review relief from child to parent concepts."""
+        try:
+            return await backend.apply_prereq_relief(
+                user_id=user_id,
+                source_concept_uid=source_concept_uid,
+                source_dimension=source_dimension,
+                quality_q=quality_q,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="get_sr_stats")
+    async def get_sr_stats(
+        user_id: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        """Fetch aggregate spaced repetition statistics for a user."""
+        try:
+            return await backend.get_sr_stats(user_id=user_id)
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 

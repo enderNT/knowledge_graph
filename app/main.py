@@ -108,7 +108,7 @@ def create_app(
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
-    from app.routers import adaptive, concepts, episodes, health, jobs, knowledge, pedagogical, search
+    from app.routers import adaptive, concepts, episodes, health, jobs, knowledge, pedagogical, search, sr
 
     app.include_router(health.router)
     app.include_router(knowledge.router)
@@ -117,6 +117,7 @@ def create_app(
     app.include_router(search.router)
     app.include_router(concepts.router)
     app.include_router(pedagogical.router)
+    app.include_router(sr.router)
     app.include_router(adaptive.router)
     return app
 app = create_app()

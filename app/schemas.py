@@ -235,6 +235,7 @@ class TutorContextResponse(BaseModel):
 
 
 PedagogicalDimension = Literal["recognition", "recall", "explanation", "application"]
+AdaptiveBlockPurpose = Literal["spaced_repetition_review", "new_content"]
 AdaptiveQuestionType = Literal[
     "multiple_choice_single",
     "multiple_choice_multi",
@@ -457,14 +458,108 @@ class AdaptiveNextStepPolicy(BaseModel):
     on_failure: str
 
 
+class SpacedRepetitionState(BaseModel):
+    user_id: str = Field(min_length=1)
+    concept_uid: str = Field(min_length=1)
+    dimension: PedagogicalDimension
+    repetitions: int = Field(default=0, ge=0)
+    ease_factor: float = Field(default=2.5, ge=1.3)
+    interval_days: int = Field(default=0, ge=0)
+    last_reviewed_at: str | None = None
+    next_review_at: str
+    propagation_relief_count: int = Field(default=0, ge=0)
+    requires_direct_validation: bool = False
+    updated_at: str
+
+
+class DueSRItem(BaseModel):
+    concept_uid: str = Field(min_length=1)
+    dimension: PedagogicalDimension
+    next_review_at: str
+    days_overdue: int = Field(ge=0)
+    concept_name: str = ""
+    domain: str = ""
+    mastery_score_0_to_100: float = Field(default=50.0, ge=0.0, le=100.0)
+    confidence_0_to_1: float = Field(default=0.25, ge=0.0, le=1.0)
+    requires_direct_validation: bool = False
+
+
+class SRFeedback(BaseModel):
+    concept_uid: str = Field(min_length=1)
+    dimension: PedagogicalDimension
+    calculated_quality_q: int = Field(ge=0, le=5)
+    rationale: str
+
+
+class SRStats(BaseModel):
+    total_items: int = Field(default=0, ge=0)
+    due_items: int = Field(default=0, ge=0)
+    forced_review_items: int = Field(default=0, ge=0)
+    average_ease_factor: float = Field(default=0.0, ge=0.0)
+
+
+class GetSRStateRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    concept_uid: str = Field(min_length=1)
+    dimension: PedagogicalDimension
+
+
+class GetSRStateResponse(BaseModel):
+    state: SpacedRepetitionState
+
+
+class GetDueSRItemsResponse(BaseModel):
+    user_id: str = Field(min_length=1)
+    items: list[DueSRItem] = Field(default_factory=list)
+
+
+class UpdateSRFromBlockRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    concept_uid: str = Field(min_length=1)
+    dimension: PedagogicalDimension
+    block_verdict: AdaptiveVerdict
+    block_difficulty: AdaptiveDifficulty
+    hint_used: bool = False
+    retry_used: bool = False
+    coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    precision: float = Field(default=0.0, ge=0.0, le=1.0)
+    was_direct_evaluation: bool = True
+
+
+class UpdateSRFromBlockResponse(BaseModel):
+    state: SpacedRepetitionState
+    sr_feedback: SRFeedback
+    ef_bonus_applied: bool = False
+
+
+class ApplyPrereqReliefRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    source_concept_uid: str = Field(min_length=1)
+    source_dimension: PedagogicalDimension
+    quality_q: int = Field(ge=0, le=5)
+
+
+class ApplyPrereqReliefResponse(BaseModel):
+    updated_states: list[SpacedRepetitionState] = Field(default_factory=list)
+
+
+class GetSRStatsResponse(BaseModel):
+    user_id: str = Field(min_length=1)
+    stats: SRStats
+
+
 class AdaptiveBlockPlan(BaseModel):
     block_id: str
+    block_purpose: AdaptiveBlockPurpose = "new_content"
     block_goal: AdaptiveBlockGoal
     target_concept_uid: str
     target_concept_name: str
+    concept_domain: str = ""
     target_dimensions: list[PedagogicalDimension] = Field(min_length=1, max_length=2)
     recommended_question_types: list[AdaptiveQuestionType] = Field(min_length=1, max_length=3)
     difficulty: AdaptiveDifficulty
+    due_item: DueSRItem | None = None
+    corrective_explanation_seed: str = ""
     scaffolding: AdaptiveScaffoldingPolicy
     success_criteria: AdaptiveSuccessCriteria
     next_step_policy: AdaptiveNextStepPolicy
@@ -532,6 +627,7 @@ class AdaptiveBlockResult(BaseModel):
     dimension_summary: dict[PedagogicalDimension, float] = Field(default_factory=dict)
     block_verdict: AdaptiveVerdict
     block_score: float = Field(ge=0.0, le=1.0)
+    sr_feedback: SRFeedback | None = None
     recommended_next_action: str
     corrective_explanation: str = ""
     transition_explanation: str = ""
@@ -540,6 +636,10 @@ class AdaptiveBlockResult(BaseModel):
 class AdaptiveSessionSummary(BaseModel):
     total_blocks: int = 0
     completed_blocks: int = 0
+    review_blocks_target: int = 0
+    new_blocks_target: int = 0
+    review_blocks_completed: int = 0
+    new_blocks_completed: int = 0
     latest_block_verdict: AdaptiveVerdict | None = None
     session_closed: bool = False
     closure_reason: str | None = None

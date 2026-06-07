@@ -122,6 +122,42 @@ class FakeBackendClient:
             "warnings": [],
         }
         self.pedagogical_session_view_result = self.pedagogical_update_result["session_view"]
+        self.sr_state_result = {
+            "state": {
+                "user_id": "user-1",
+                "concept_uid": "cn_1",
+                "dimension": "recognition",
+                "repetitions": 1,
+                "ease_factor": 2.5,
+                "interval_days": 1,
+                "last_reviewed_at": "2026-06-06T10:00:00+00:00",
+                "next_review_at": "2026-06-07T10:00:00+00:00",
+                "propagation_relief_count": 0,
+                "requires_direct_validation": False,
+                "updated_at": "2026-06-06T10:00:00+00:00",
+            }
+        }
+        self.due_sr_items_result = {"user_id": "user-1", "items": []}
+        self.sr_update_result = {
+            "state": self.sr_state_result["state"],
+            "sr_feedback": {
+                "concept_uid": "cn_1",
+                "dimension": "recognition",
+                "calculated_quality_q": 5,
+                "rationale": "Respuesta correcta directa sin apoyo",
+            },
+            "ef_bonus_applied": False,
+        }
+        self.sr_relief_result = {"updated_states": []}
+        self.sr_stats_result = {
+            "user_id": "user-1",
+            "stats": {
+                "total_items": 1,
+                "due_items": 0,
+                "forced_review_items": 0,
+                "average_ease_factor": 2.5,
+            },
+        }
         self.adaptive_session_result = {
             "session": {
                 "session_id": "ads_1",
@@ -292,6 +328,21 @@ class FakeBackendClient:
     async def get_pedagogical_session_view(self, **_: Any) -> dict[str, Any]:
         return self.pedagogical_session_view_result
 
+    async def get_sr_state(self, **_: Any) -> dict[str, Any]:
+        return self.sr_state_result
+
+    async def get_due_sr_items(self, **_: Any) -> dict[str, Any]:
+        return self.due_sr_items_result
+
+    async def update_sr_from_block_result(self, **_: Any) -> dict[str, Any]:
+        return self.sr_update_result
+
+    async def apply_prereq_relief(self, **_: Any) -> dict[str, Any]:
+        return self.sr_relief_result
+
+    async def get_sr_stats(self, **_: Any) -> dict[str, Any]:
+        return self.sr_stats_result
+
     async def start_adaptive_session(self, **_: Any) -> dict[str, Any]:
         return self.adaptive_session_result
 
@@ -355,24 +406,29 @@ async def client_session() -> AsyncGenerator[Any]:
 
 
 @pytest.mark.anyio
-async def test_mcp_server_exposes_exactly_fifteen_tools(client_session):
+async def test_mcp_server_exposes_exactly_twenty_tools(client_session):
     tools = await client_session.list_tools()
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
+        "apply_prereq_relief",
         "attach_concept_evidence",
         "create_concept",
         "get_adaptive_session",
+        "get_due_sr_items",
         "get_learning_context",
         "get_neighborhood",
         "get_pedagogical_context",
         "get_pedagogical_session_view",
+        "get_sr_state",
+        "get_sr_stats",
         "get_tutor_context",
         "link_concepts",
         "search_candidates",
         "start_adaptive_session",
         "submit_adaptive_block",
         "update_pedagogical_context",
+        "update_sr_from_block_result",
         "upsert_concept",
     ]
 
@@ -381,6 +437,7 @@ async def test_mcp_server_exposes_exactly_fifteen_tools(client_session):
     assert tool_map["search_candidates"].inputSchema["properties"]["limit"]["default"] == 10
     assert tool_map["get_learning_context"].inputSchema["properties"]["candidate_limit"]["default"] == 8
     assert tool_map["get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
+    assert tool_map["get_sr_state"].inputSchema["properties"]["dimension"]["type"] == "string"
     assert tool_map["get_tutor_context"].inputSchema["properties"]["include_evidence"]["default"] is True
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
     assert "from" in tool_map["link_concepts"].inputSchema["properties"]
@@ -436,6 +493,13 @@ async def test_mcp_server_translates_tool_results_and_errors():
         )
         assert pedagogical_context.isError in {False, None}
         assert pedagogical_context.structuredContent["user_id"] == "user-1"
+
+        sr_state = await session.call_tool(
+            "get_sr_state",
+            {"user_id": "user-1", "concept_uid": "cn_1", "dimension": "recognition"},
+        )
+        assert sr_state.isError in {False, None}
+        assert sr_state.structuredContent["state"]["dimension"] == "recognition"
 
         pedagogical_update = await session.call_tool(
             "update_pedagogical_context",
@@ -497,18 +561,23 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
+        "apply_prereq_relief",
         "attach_concept_evidence",
         "create_concept",
         "get_adaptive_session",
+        "get_due_sr_items",
         "get_learning_context",
         "get_neighborhood",
         "get_pedagogical_context",
         "get_pedagogical_session_view",
+        "get_sr_state",
+        "get_sr_stats",
         "get_tutor_context",
         "link_concepts",
         "search_candidates",
         "start_adaptive_session",
         "submit_adaptive_block",
         "update_pedagogical_context",
+        "update_sr_from_block_result",
         "upsert_concept",
     ]

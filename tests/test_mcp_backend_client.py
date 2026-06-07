@@ -314,3 +314,77 @@ async def test_tutor_context_request_and_response_shape():
 
     assert result["status"] == "failed"
     assert result["failure_reason"] == "insufficient_traceable_evidence"
+
+
+@pytest.mark.anyio
+async def test_spaced_repetition_request_shapes():
+    calls: list[tuple[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.url.path == "/v1/sr/state":
+            assert request.url.params["user_id"] == "user-1"
+            assert request.url.params["concept_uid"] == "cn_1"
+            assert request.url.params["dimension"] == "recall"
+            return _response(request, 200, {"state": {"user_id": "user-1", "concept_uid": "cn_1", "dimension": "recall", "repetitions": 0, "ease_factor": 2.5, "interval_days": 0, "last_reviewed_at": None, "next_review_at": "2026-06-07T10:00:00+00:00", "propagation_relief_count": 0, "requires_direct_validation": False, "updated_at": "2026-06-07T10:00:00+00:00"}})
+        if request.url.path == "/v1/sr/due":
+            assert request.url.params["user_id"] == "user-1"
+            return _response(request, 200, {"user_id": "user-1", "items": []})
+        if request.url.path == "/v1/sr/update":
+            assert json.loads(request.content.decode()) == {
+                "user_id": "user-1",
+                "concept_uid": "cn_1",
+                "dimension": "recall",
+                "block_verdict": "correct",
+                "block_difficulty": "intermediate",
+                "hint_used": False,
+                "retry_used": False,
+                "coverage": 1.0,
+                "precision": 1.0,
+                "was_direct_evaluation": True,
+            }
+            return _response(request, 200, {"state": {"user_id": "user-1", "concept_uid": "cn_1", "dimension": "recall", "repetitions": 1, "ease_factor": 2.6, "interval_days": 1, "last_reviewed_at": "2026-06-07T10:00:00+00:00", "next_review_at": "2026-06-08T10:00:00+00:00", "propagation_relief_count": 0, "requires_direct_validation": False, "updated_at": "2026-06-07T10:00:00+00:00"}, "sr_feedback": {"concept_uid": "cn_1", "dimension": "recall", "calculated_quality_q": 5, "rationale": "ok"}, "ef_bonus_applied": False})
+        if request.url.path == "/v1/sr/relief":
+            assert json.loads(request.content.decode()) == {
+                "user_id": "user-1",
+                "source_concept_uid": "cn_2",
+                "source_dimension": "application",
+                "quality_q": 4,
+            }
+            return _response(request, 200, {"updated_states": []})
+        if request.url.path == "/v1/sr/stats":
+            assert request.url.params["user_id"] == "user-1"
+            return _response(request, 200, {"user_id": "user-1", "stats": {"total_items": 1, "due_items": 0, "forced_review_items": 0, "average_ease_factor": 2.6}})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        await client.get_sr_state(user_id="user-1", concept_uid="cn_1", dimension="recall")
+        await client.get_due_sr_items(user_id="user-1")
+        await client.update_sr_from_block_result(
+            user_id="user-1",
+            concept_uid="cn_1",
+            dimension="recall",
+            block_verdict="correct",
+            block_difficulty="intermediate",
+            coverage=1.0,
+            precision=1.0,
+        )
+        await client.apply_prereq_relief(
+            user_id="user-1",
+            source_concept_uid="cn_2",
+            source_dimension="application",
+            quality_q=4,
+        )
+        stats = await client.get_sr_stats(user_id="user-1")
+    finally:
+        await client.close()
+
+    assert stats["stats"]["average_ease_factor"] == 2.6
+    assert calls == [
+        ("GET", "/v1/sr/state"),
+        ("GET", "/v1/sr/due"),
+        ("POST", "/v1/sr/update"),
+        ("POST", "/v1/sr/relief"),
+        ("GET", "/v1/sr/stats"),
+    ]

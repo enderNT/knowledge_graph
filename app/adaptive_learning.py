@@ -10,7 +10,9 @@ from app.config import Settings
 from app.learning_context import TutorContextBuilder
 from app.pedagogical_context import PedagogicalContextBuilder
 from app.schemas import (
+    ApplyPrereqReliefRequest,
     AdaptiveBlockPlan,
+    AdaptiveBlockPurpose,
     AdaptiveBlockResponse,
     AdaptiveBlockResult,
     AdaptiveBlockSubmissionRequest,
@@ -37,12 +39,16 @@ from app.schemas import (
     PedagogicalRecentStats,
     PedagogicalRecalculationTrace,
     TutorContextRequest,
+    TutorContextResolvedReference,
     TutorContextResponse,
     AdaptiveBlockAnswerKey,
     AdaptiveBlockItem,
     AdaptiveItemSubmission,
     AdaptiveSessionConstraints,
+    DueSRItem,
+    UpdateSRFromBlockRequest,
 )
+from app.spaced_repetition import SpacedRepetitionService
 from app.store import KnowledgeStore
 from app.utils import make_prefixed_id, normalize_text, utcnow_iso
 
@@ -79,12 +85,15 @@ _RELATION_WEIGHTS = {
 @dataclass
 class AdaptivePlannerDecision:
     concept: PedagogicalConceptState
+    block_purpose: AdaptiveBlockPurpose
     block_goal: str
     difficulty: AdaptiveDifficulty
     primary_dimension: PedagogicalDimension
     question_types: list[AdaptiveQuestionType]
     scaffolding: AdaptiveScaffoldingPolicy
     explanation: str
+    due_item: DueSRItem | None = None
+    corrective_explanation_seed: str = ""
 
 
 class AdaptiveLearningService:
@@ -98,6 +107,7 @@ class AdaptiveLearningService:
         self._settings = settings
         self._store = store
         self._ai_provider = ai_provider
+        self._sr_service = SpacedRepetitionService(settings=settings, store=store)
 
     async def start_session(
         self,
@@ -105,21 +115,20 @@ class AdaptiveLearningService:
     ) -> AdaptiveSessionStartResponse:
         tutor_context = await self._resolve_tutor_context(payload)
         pedagogical_context = await self._store.get_pedagogical_context(user_id=payload.user_id)
-        concept_state = await self._select_target_concept(
+        review_candidates = await self._sr_service.list_review_candidates_for_planner(user_id=payload.user_id)
+        review_target, new_target = self._session_mix(
+            review_candidate_count=len(review_candidates),
+            max_blocks=payload.constraints.max_blocks,
+        )
+        block = await self._build_next_block(
             user_id=payload.user_id,
-            tutor_context=tutor_context,
+            constraints=payload.constraints,
+            route_tutor_context=tutor_context,
             pedagogical_context=pedagogical_context,
-        )
-        decision = self._plan_block(
-            concept_state=concept_state,
-            constraints=payload.constraints,
             previous_result=None,
-        )
-        block = self._generate_block(
-            tutor_context=tutor_context,
-            concept_state=concept_state,
-            constraints=payload.constraints,
-            decision=decision,
+            review_blocks_completed=0,
+            review_blocks_target=review_target,
+            review_candidates=review_candidates,
         )
         session = AdaptiveSessionSnapshot(
             session_id=make_prefixed_id("ads"),
@@ -134,6 +143,10 @@ class AdaptiveLearningService:
             summary=AdaptiveSessionSummary(
                 total_blocks=payload.constraints.max_blocks,
                 completed_blocks=0,
+                review_blocks_target=review_target,
+                new_blocks_target=new_target,
+                review_blocks_completed=0,
+                new_blocks_completed=0,
                 latest_block_verdict=None,
                 session_closed=False,
                 closure_reason=None,
@@ -154,7 +167,7 @@ class AdaptiveLearningService:
         return AdaptiveSessionStartResponse(
             session=session,
             current_block=block,
-            planner_explanation=decision.explanation,
+            planner_explanation=block.plan.planner_explanation,
             grounding_status="ok",
         )
 
@@ -202,6 +215,36 @@ class AdaptiveLearningService:
         block_score = round(sum(result.score_0_to_1 for result in item_results) / len(item_results), 2)
         block_verdict = self._band_verdict(block_score)
         next_action = self._next_action_from_verdict(block_verdict)
+        avg_coverage = round(
+            sum(result.signals.get("coverage", 0.0) for result in item_results) / max(len(item_results), 1),
+            2,
+        )
+        avg_precision = round(
+            sum(result.signals.get("precision", 0.0) for result in item_results) / max(len(item_results), 1),
+            2,
+        )
+        sr_update = await self._sr_service.update_from_block_result(
+            UpdateSRFromBlockRequest(
+                user_id=session.user_id,
+                concept_uid=current_block.plan.target_concept_uid,
+                dimension=current_block.plan.target_dimensions[0],
+                block_verdict=block_verdict,
+                block_difficulty=current_block.plan.difficulty,
+                hint_used=any(item.used_hint for item in item_results),
+                retry_used=any(item.used_retry for item in item_results),
+                coverage=avg_coverage,
+                precision=avg_precision,
+                was_direct_evaluation=True,
+            )
+        )
+        await self._sr_service.apply_prereq_relief(
+            ApplyPrereqReliefRequest(
+                user_id=session.user_id,
+                source_concept_uid=current_block.plan.target_concept_uid,
+                source_dimension=current_block.plan.target_dimensions[0],
+                quality_q=sr_update.sr_feedback.calculated_quality_q,
+            )
+        )
         concept_state = await self._upsert_state_from_block(
             session=session,
             block=current_block,
@@ -216,8 +259,9 @@ class AdaptiveLearningService:
             dimension_summary=dimension_summary,
             block_verdict=block_verdict,
             block_score=block_score,
+            sr_feedback=sr_update.sr_feedback,
             recommended_next_action=next_action,
-            corrective_explanation=self._corrective_explanation(session.tutor_context),
+            corrective_explanation=current_block.plan.corrective_explanation_seed or self._corrective_explanation(session.tutor_context),
             transition_explanation=self._transition_explanation(block_verdict, concept_state.concept_name),
         )
         await self._store.append_adaptive_block_attempt(
@@ -229,6 +273,12 @@ class AdaptiveLearningService:
             block_result=block_result,
         )
 
+        review_blocks_completed = session.summary.review_blocks_completed + (
+            1 if current_block.plan.block_purpose == "spaced_repetition_review" else 0
+        )
+        new_blocks_completed = session.summary.new_blocks_completed + (
+            1 if current_block.plan.block_purpose == "new_content" else 0
+        )
         session_closed = (
             len(session.block_history) + 1 >= session.constraints.max_blocks
             or (
@@ -238,16 +288,16 @@ class AdaptiveLearningService:
         )
         next_block = None
         if not session_closed:
-            decision = self._plan_block(
-                concept_state=concept_state,
+            review_candidates = await self._sr_service.list_review_candidates_for_planner(user_id=session.user_id)
+            next_block = await self._build_next_block(
+                user_id=session.user_id,
                 constraints=session.constraints,
+                route_tutor_context=session.tutor_context,
+                pedagogical_context=updated_context,
                 previous_result=block_result,
-            )
-            next_block = self._generate_block(
-                tutor_context=session.tutor_context,
-                concept_state=concept_state,
-                constraints=session.constraints,
-                decision=decision,
+                review_blocks_completed=review_blocks_completed,
+                review_blocks_target=session.summary.review_blocks_target,
+                review_candidates=review_candidates,
             )
             await self._store.append_adaptive_block_attempt(
                 session_id=session_id,
@@ -265,6 +315,8 @@ class AdaptiveLearningService:
                 "summary": session.summary.model_copy(
                     update={
                         "completed_blocks": session.summary.completed_blocks + 1,
+                        "review_blocks_completed": review_blocks_completed,
+                        "new_blocks_completed": new_blocks_completed,
                         "latest_block_verdict": block_verdict,
                         "session_closed": session_closed,
                         "closure_reason": "coverage_sufficient"
@@ -334,23 +386,163 @@ class AdaptiveLearningService:
         )
         return candidates[0]
 
+    async def _build_next_block(
+        self,
+        *,
+        user_id: str,
+        constraints: AdaptiveSessionConstraints,
+        route_tutor_context: TutorContextResponse,
+        pedagogical_context: PedagogicalContextSnapshot,
+        previous_result: AdaptiveBlockResult | None,
+        review_blocks_completed: int,
+        review_blocks_target: int,
+        review_candidates: list[DueSRItem],
+    ) -> AdaptiveBlockResponse:
+        if review_blocks_completed < review_blocks_target:
+            for due_item in review_candidates:
+                review_block = await self._build_review_block(
+                    user_id=user_id,
+                    constraints=constraints,
+                    pedagogical_context=pedagogical_context,
+                    due_item=due_item,
+                )
+                if review_block is not None:
+                    return review_block
+
+        concept_state = await self._select_target_concept(
+            user_id=user_id,
+            tutor_context=route_tutor_context,
+            pedagogical_context=pedagogical_context,
+        )
+        decision = self._plan_block(
+            concept_state=concept_state,
+            constraints=constraints,
+            previous_result=previous_result,
+            block_purpose="new_content",
+        )
+        return self._generate_block(
+            tutor_context=route_tutor_context,
+            concept_state=concept_state,
+            constraints=constraints,
+            decision=decision,
+        )
+
+    async def _build_review_block(
+        self,
+        *,
+        user_id: str,
+        constraints: AdaptiveSessionConstraints,
+        pedagogical_context: PedagogicalContextSnapshot,
+        due_item: DueSRItem,
+    ) -> AdaptiveBlockResponse | None:
+        tutor_context = await self._resolve_tutor_context_for_concept(
+            concept_uid=due_item.concept_uid,
+            concept_name=due_item.concept_name,
+        )
+        if tutor_context is None:
+            return None
+        concept_state = self._concept_state_for_due_item(
+            user_id=user_id,
+            pedagogical_context=pedagogical_context,
+            tutor_context=tutor_context,
+            due_item=due_item,
+        )
+        decision = self._plan_block(
+            concept_state=concept_state,
+            constraints=constraints,
+            previous_result=None,
+            block_purpose="spaced_repetition_review",
+            forced_dimension=due_item.dimension,
+            due_item=due_item,
+        )
+        return self._generate_block(
+            tutor_context=tutor_context,
+            concept_state=concept_state,
+            constraints=constraints,
+            decision=decision,
+        )
+
+    async def _resolve_tutor_context_for_concept(
+        self,
+        *,
+        concept_uid: str,
+        concept_name: str,
+    ) -> TutorContextResponse | None:
+        builder = TutorContextBuilder(
+            settings=self._settings,
+            store=self._store,
+            ai_provider=self._ai_provider,
+        )
+        bundle = await self._store.get_tutor_context_for_concept(concept_uid, depth=1)
+        response = builder._finalize_response(
+            resolved=TutorContextResolvedReference(
+                input_type="query",
+                input_value=concept_name or concept_uid,
+                resolved_concept_uid=concept_uid,
+                resolved_concept_name=concept_name or None,
+            ),
+            bundle=bundle,
+            include_evidence=True,
+        )
+        return response if response.status == "ok" else None
+
+    def _concept_state_for_due_item(
+        self,
+        *,
+        user_id: str,
+        pedagogical_context: PedagogicalContextSnapshot,
+        tutor_context: TutorContextResponse,
+        due_item: DueSRItem,
+    ) -> PedagogicalConceptState:
+        existing = next(
+            (item for item in pedagogical_context.concepts if item.concept_uid == due_item.concept_uid),
+            None,
+        )
+        if existing is not None:
+            return existing
+        concept = next((item for item in tutor_context.concepts if item.uid == due_item.concept_uid), None)
+        concept_name = due_item.concept_name or (concept.canonical_name if concept else due_item.concept_uid)
+        domain = due_item.domain or (concept.domain if concept else "General")
+        return self._default_concept_state(
+            user_id=user_id,
+            concept_uid=due_item.concept_uid,
+            concept_name=concept_name,
+            domain=domain,
+        )
+
+    @staticmethod
+    def _session_mix(*, review_candidate_count: int, max_blocks: int) -> tuple[int, int]:
+        if review_candidate_count <= 0:
+            return 0, max_blocks
+        ratio = 0.75 if review_candidate_count >= 4 else 0.5
+        review_blocks = round(max_blocks * ratio)
+        if max_blocks > 1:
+            review_blocks = max(1, min(max_blocks - 1, review_blocks))
+        else:
+            review_blocks = 1
+        review_blocks = min(review_blocks, review_candidate_count)
+        return review_blocks, max_blocks - review_blocks
+
     def _plan_block(
         self,
         *,
         concept_state: PedagogicalConceptState,
         constraints: AdaptiveSessionConstraints,
         previous_result: AdaptiveBlockResult | None,
+        block_purpose: AdaptiveBlockPurpose,
+        forced_dimension: PedagogicalDimension | None = None,
+        due_item: DueSRItem | None = None,
     ) -> AdaptivePlannerDecision:
-        primary_dimension = concept_state.dimensions.weakest_dimension()[0]
-        weakest_score = concept_state.dimensions.weakest_dimension()[1].score_0_to_100
-        if previous_result is not None:
+        primary_dimension = forced_dimension or concept_state.dimensions.weakest_dimension()[0]
+        weakest_score = getattr(concept_state.dimensions, primary_dimension).score_0_to_100
+        if forced_dimension is None and previous_result is not None:
             primary_dimension = self._follow_up_dimension(previous_result, concept_state)
             weakest_score = getattr(concept_state.dimensions, primary_dimension).score_0_to_100
         if concept_state.confidence_0_to_1 < 0.45:
             block_goal = "diagnose_uncertain"
         elif weakest_score < 55:
             block_goal = "reinforce_weak"
-        elif previous_result and previous_result.block_verdict == "correct":
+        elif previous_result and previous_result.block_verdict == "correct" and block_purpose == "new_content":
             block_goal = "test_depth"
         else:
             block_goal = "confirm_improvement"
@@ -362,18 +554,27 @@ class AdaptiveLearningService:
             )
         question_types = self._question_types_for_dimension(primary_dimension, constraints)
         scaffolding = self._scaffolding_for_score(weakest_score, constraints.allow_scaffolding)
-        explanation = (
-            f"Se prioriza {concept_state.concept_name} porque su prioridad es {concept_state.priority_score:.2f}, "
-            f"la dimension objetivo es {primary_dimension} y su senal actual es {weakest_score:.1f}."
-        )
+        if block_purpose == "spaced_repetition_review" and due_item is not None:
+            explanation = (
+                f"Se prioriza repaso SR de {concept_state.concept_name} en {primary_dimension} "
+                f"porque está vencido {due_item.days_overdue} dias."
+            )
+        else:
+            explanation = (
+                f"Se prioriza {concept_state.concept_name} porque su prioridad es {concept_state.priority_score:.2f}, "
+                f"la dimension objetivo es {primary_dimension} y su senal actual es {weakest_score:.1f}."
+            )
         return AdaptivePlannerDecision(
             concept=concept_state,
+            block_purpose=block_purpose,
             block_goal=block_goal,
             difficulty=difficulty,
             primary_dimension=primary_dimension,
             question_types=question_types,
             scaffolding=scaffolding,
             explanation=explanation,
+            due_item=due_item,
+            corrective_explanation_seed="",
         )
 
     def _generate_block(
@@ -387,12 +588,16 @@ class AdaptiveLearningService:
         block_id = make_prefixed_id("blk")
         plan = AdaptiveBlockPlan(
             block_id=block_id,
+            block_purpose=decision.block_purpose,
             block_goal=decision.block_goal,
             target_concept_uid=concept_state.concept_uid,
             target_concept_name=concept_state.concept_name,
+            concept_domain=concept_state.domain,
             target_dimensions=[decision.primary_dimension],
             recommended_question_types=decision.question_types,
             difficulty=decision.difficulty,
+            due_item=decision.due_item,
+            corrective_explanation_seed=decision.corrective_explanation_seed or self._corrective_explanation(tutor_context),
             scaffolding=decision.scaffolding,
             success_criteria=AdaptiveSuccessCriteria(),
             next_step_policy=AdaptiveNextStepPolicy(
@@ -640,7 +845,10 @@ class AdaptiveLearningService:
     ) -> PedagogicalConceptState:
         concept_uid = block.plan.target_concept_uid
         concept_name = block.plan.target_concept_name
-        domain = next((concept.domain for concept in session.tutor_context.concepts if concept.uid == concept_uid), session.domain_hint or "General")
+        domain = block.plan.concept_domain or next(
+            (concept.domain for concept in session.tutor_context.concepts if concept.uid == concept_uid),
+            session.domain_hint or "General",
+        )
         existing_context = await self._store.get_pedagogical_context(user_id=session.user_id)
         existing_map = {item.concept_uid: item for item in existing_context.concepts}
         existing = existing_map.get(concept_uid) or self._default_concept_state(

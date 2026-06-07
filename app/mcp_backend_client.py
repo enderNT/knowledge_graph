@@ -228,6 +228,91 @@ class MCPBackendClient:
             },
         )
 
+    async def get_sr_state(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/v1/sr/state",
+            params={"user_id": user_id, "concept_uid": concept_uid, "dimension": dimension},
+        )
+
+    async def get_due_sr_items(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/v1/sr/due",
+            params={"user_id": user_id},
+        )
+
+    async def update_sr_from_block_result(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+        block_verdict: str,
+        block_difficulty: str,
+        hint_used: bool = False,
+        retry_used: bool = False,
+        coverage: float = 0.0,
+        precision: float = 0.0,
+        was_direct_evaluation: bool = True,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/sr/update",
+            json={
+                "user_id": user_id,
+                "concept_uid": concept_uid,
+                "dimension": dimension,
+                "block_verdict": block_verdict,
+                "block_difficulty": block_difficulty,
+                "hint_used": hint_used,
+                "retry_used": retry_used,
+                "coverage": coverage,
+                "precision": precision,
+                "was_direct_evaluation": was_direct_evaluation,
+            },
+        )
+
+    async def apply_prereq_relief(
+        self,
+        *,
+        user_id: str,
+        source_concept_uid: str,
+        source_dimension: str,
+        quality_q: int,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/sr/relief",
+            json={
+                "user_id": user_id,
+                "source_concept_uid": source_concept_uid,
+                "source_dimension": source_dimension,
+                "quality_q": quality_q,
+            },
+        )
+
+    async def get_sr_stats(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/v1/sr/stats",
+            params={"user_id": user_id},
+        )
+
     async def start_adaptive_session(
         self,
         *,

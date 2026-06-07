@@ -126,6 +126,50 @@ class AgentUpstreamProtocol(Protocol):
         query: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def get_sr_state(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+    ) -> dict[str, Any]: ...
+
+    async def get_due_sr_items(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]: ...
+
+    async def update_sr_from_block_result(
+        self,
+        *,
+        user_id: str,
+        concept_uid: str,
+        dimension: str,
+        block_verdict: str,
+        block_difficulty: str,
+        hint_used: bool = False,
+        retry_used: bool = False,
+        coverage: float = 0.0,
+        precision: float = 0.0,
+        was_direct_evaluation: bool = True,
+    ) -> dict[str, Any]: ...
+
+    async def apply_prereq_relief(
+        self,
+        *,
+        user_id: str,
+        source_concept_uid: str,
+        source_dimension: str,
+        quality_q: int,
+    ) -> dict[str, Any]: ...
+
+    async def get_sr_stats(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]: ...
+
     async def start_adaptive_session(
         self,
         *,
@@ -440,6 +484,85 @@ def create_agent_mcp_server(
                 concept_uids=concept_uids,
                 query=query,
             )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_sr_get_state")
+    async def kg_sr_get_state(
+        user_id: Annotated[str, Field(min_length=1)],
+        concept_uid: Annotated[str, Field(min_length=1)],
+        dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.get_sr_state(
+                user_id=user_id,
+                concept_uid=concept_uid,
+                dimension=dimension,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_sr_get_due_items")
+    async def kg_sr_get_due_items(
+        user_id: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.get_due_sr_items(user_id=user_id)
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_sr_update_from_block")
+    async def kg_sr_update_from_block(
+        user_id: Annotated[str, Field(min_length=1)],
+        concept_uid: Annotated[str, Field(min_length=1)],
+        dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
+        block_verdict: Annotated[str, Field(pattern="^(correct|partial_high|partial_low|incorrect|unsupported)$")],
+        block_difficulty: Annotated[str, Field(pattern="^(introductory|intermediate|advanced)$")],
+        hint_used: bool = False,
+        retry_used: bool = False,
+        coverage: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        precision: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
+        was_direct_evaluation: bool = True,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.update_sr_from_block_result(
+                user_id=user_id,
+                concept_uid=concept_uid,
+                dimension=dimension,
+                block_verdict=block_verdict,
+                block_difficulty=block_difficulty,
+                hint_used=hint_used,
+                retry_used=retry_used,
+                coverage=coverage,
+                precision=precision,
+                was_direct_evaluation=was_direct_evaluation,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_sr_apply_relief")
+    async def kg_sr_apply_relief(
+        user_id: Annotated[str, Field(min_length=1)],
+        source_concept_uid: Annotated[str, Field(min_length=1)],
+        source_dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
+        quality_q: Annotated[int, Field(ge=0, le=5)],
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.apply_prereq_relief(
+                user_id=user_id,
+                source_concept_uid=source_concept_uid,
+                source_dimension=source_dimension,
+                quality_q=quality_q,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_sr_get_stats")
+    async def kg_sr_get_stats(
+        user_id: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.get_sr_stats(user_id=user_id)
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 
