@@ -31,6 +31,7 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         alias="OPENAI_EMBEDDINGS_MODEL",
     )
+    openai_timeout_seconds: float = Field(default=180.0, alias="OPENAI_TIMEOUT_SECONDS")
     embedding_dimensions: int = Field(default=16, alias="EMBEDDING_DIMENSIONS")
 
     resolution_match_threshold: float = 0.91

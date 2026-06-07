@@ -5,7 +5,7 @@ import time
 
 from app.ai_provider import StubAIProvider
 from app.ingestion import IngestionService
-from app.schemas import CandidateHit
+from app.schemas import CandidateHit, UpsertConceptRequest
 
 
 def _wait_for_job_completion(client, headers, job_id: str, timeout: float = 2.0):
@@ -240,9 +240,77 @@ def test_ambiguous_resolution_marks_needs_review(settings, store):
             aliases=[],
             confidence=0.9,
             embedding=await provider.embed("Extinción"),
+            evidence_quotes=["La extinción reduce una respuesta aprendida."],
+            claim_support_count=1,
             candidates=candidates,
         )
         assert resolution.strategy == "ambiguous"
         assert resolution.concept is None
+
+    asyncio.run(run_assertion())
+
+
+def test_new_concept_without_evidence_or_claim_support_is_rejected(settings, store):
+    provider = StubAIProvider(settings)
+    service = IngestionService(
+        settings=settings,
+        store=store,
+        ai_provider=provider,
+        queue=asyncio.Queue(),
+    )
+
+    async def run_assertion():
+        resolution = await service._resolve_concept(
+            canonical_name="Punto Flotante de Precision Simple",
+            domain="Programacion Cobol",
+            description="",
+            aliases=[],
+            confidence=0.7,
+            embedding=await provider.embed("Punto Flotante de Precision Simple"),
+            evidence_quotes=[],
+            claim_support_count=0,
+            candidates=[],
+        )
+        assert resolution.strategy == "rejected"
+        assert resolution.concept is None
+        assert "missing claim support or traceable evidence" in (resolution.needs_review_reason or "")
+
+    asyncio.run(run_assertion())
+
+
+def test_conflicting_exact_alias_reuses_existing_concept_identity(settings, store):
+    provider = StubAIProvider(settings)
+    service = IngestionService(
+        settings=settings,
+        store=store,
+        ai_provider=provider,
+        queue=asyncio.Queue(),
+    )
+
+    async def run_assertion():
+        seeded, _ = await store.upsert_concept(
+            payload=UpsertConceptRequest(
+                canonical_name="Representación Zonificada",
+                aliases=["formato decimal zonificado", "decimal zonificado"],
+                domain="Programacion Cobol",
+                description="Nombre alterno previo.",
+            ),
+            embedding=await provider.embed("Representación Zonificada"),
+            source_confidence=0.9,
+        )
+        resolution = await service._resolve_concept(
+            canonical_name="Formato Decimal Zonificado",
+            domain="Programacion Cobol",
+            description="Representacion numerica con un digito por byte.",
+            aliases=["decimal zonificado"],
+            confidence=0.8,
+            embedding=await provider.embed("Formato Decimal Zonificado"),
+            evidence_quotes=["decimal zonificado (punto fijo)"],
+            claim_support_count=1,
+            candidates=[],
+        )
+        assert resolution.strategy == "updated"
+        assert resolution.concept is not None
+        assert resolution.concept.uid == seeded.uid
 
     asyncio.run(run_assertion())

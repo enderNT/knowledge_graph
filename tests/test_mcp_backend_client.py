@@ -218,6 +218,31 @@ async def test_create_concept_request_shape():
 
 
 @pytest.mark.anyio
+async def test_attach_concept_evidence_request_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/concepts/evidence"
+        assert json.loads(request.content.decode()) == {
+            "concept_ref": "cn_1",
+            "episode_id": "ep_1",
+            "link_episode_claims": True,
+        }
+        return _response(request, 200, {"status": "attached", "concept_uid": "cn_1", "episode_id": "ep_1", "linked_claim_count": 2})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.attach_concept_evidence(
+            concept_ref="cn_1",
+            episode_id="ep_1",
+            link_episode_claims=True,
+        )
+    finally:
+        await client.close()
+
+    assert result["linked_claim_count"] == 2
+
+
+@pytest.mark.anyio
 async def test_upsert_concept_sends_optional_uid():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "PUT"

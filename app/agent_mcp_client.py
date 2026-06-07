@@ -23,13 +23,18 @@ class AgentMCPUpstreamClient:
         settings: Settings,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
-        timeout: float = 20.0,
+        timeout: float | None = None,
     ) -> None:
         self._settings = settings
+        effective_timeout = timeout
+        if effective_timeout is None:
+            # Keep the upstream MCP session alive long enough for ingestion tools
+            # that intentionally wait on the backend job lifecycle.
+            effective_timeout = max(20.0, settings.mcp_ingestion_timeout_seconds + 10.0)
         self._client = httpx.AsyncClient(
             base_url=settings.knowledge_mcp_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {settings.knowledge_mcp_bearer_token}"},
-            timeout=timeout,
+            timeout=effective_timeout,
             transport=transport,
         )
 
@@ -46,6 +51,7 @@ class AgentMCPUpstreamClient:
         names = sorted(tool.name for tool in tools.tools)
         expected = {
             "add_knowledge_fragment",
+            "attach_concept_evidence",
             "create_concept",
             "search_candidates",
             "get_learning_context",
@@ -185,6 +191,22 @@ class AgentMCPUpstreamClient:
                 "aliases": aliases or [],
                 "domain": domain,
                 "description": description,
+            },
+        )
+
+    async def attach_concept_evidence(
+        self,
+        *,
+        concept_ref: str,
+        episode_id: str,
+        link_episode_claims: bool = True,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "attach_concept_evidence",
+            {
+                "concept_ref": concept_ref,
+                "episode_id": episode_id,
+                "link_episode_claims": link_episode_claims,
             },
         )
 

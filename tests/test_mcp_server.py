@@ -92,6 +92,7 @@ class FakeBackendClient:
         }
         self.upsert_result = {"concept": {"uid": "cn_1"}, "created": True}
         self.create_result = {"concept": {"uid": "cn_strict"}, "created": True}
+        self.attach_evidence_result = {"status": "attached", "concept_uid": "cn_1", "episode_id": "ep_1", "linked_claim_count": 2}
         self.link_result = {"status": "linked"}
         self.neighborhood_result = {"concept": {"uid": "cn_1"}, "nodes": [], "relations": [], "claims": [], "episodes": []}
         self.pedagogical_context_result = {
@@ -268,6 +269,9 @@ class FakeBackendClient:
     async def create_concept(self, **_: Any) -> dict[str, Any]:
         return self.create_result
 
+    async def attach_concept_evidence(self, **_: Any) -> dict[str, Any]:
+        return self.attach_evidence_result
+
     async def upsert_concept(self, **_: Any) -> dict[str, Any]:
         return self.upsert_result
 
@@ -351,11 +355,12 @@ async def client_session() -> AsyncGenerator[Any]:
 
 
 @pytest.mark.anyio
-async def test_mcp_server_exposes_exactly_fourteen_tools(client_session):
+async def test_mcp_server_exposes_exactly_fifteen_tools(client_session):
     tools = await client_session.list_tools()
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
+        "attach_concept_evidence",
         "create_concept",
         "get_adaptive_session",
         "get_learning_context",
@@ -449,6 +454,13 @@ async def test_mcp_server_translates_tool_results_and_errors():
         assert create_concept.isError in {False, None}
         assert create_concept.structuredContent["concept"]["uid"] == "cn_strict"
 
+        attach = await session.call_tool(
+            "attach_concept_evidence",
+            {"concept_ref": "cn_1", "episode_id": "ep_1", "link_episode_claims": True},
+        )
+        assert attach.isError in {False, None}
+        assert attach.structuredContent["linked_claim_count"] == 2
+
         backend.link_error = MCPBackendError("source or target concept not found", status_code=404)
         link = await session.call_tool(
             "link_concepts",
@@ -485,6 +497,7 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
+        "attach_concept_evidence",
         "create_concept",
         "get_adaptive_session",
         "get_learning_context",

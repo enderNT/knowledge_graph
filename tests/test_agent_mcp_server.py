@@ -191,6 +191,9 @@ class FakeKnowledgeBackendClient:
     async def create_concept(self, **_: Any) -> dict[str, Any]:
         return {"concept": {"uid": "cn_strict"}, "created": True}
 
+    async def attach_concept_evidence(self, **_: Any) -> dict[str, Any]:
+        return {"status": "attached", "concept_uid": "cn_strict", "episode_id": "ep_1", "linked_claim_count": 1}
+
     async def upsert_concept(self, **_: Any) -> dict[str, Any]:
         return {"concept": {"uid": "cn_new"}, "created": True}
 
@@ -439,6 +442,18 @@ def _agent_settings() -> Settings:
     )
 
 
+def test_agent_upstream_client_default_timeout_covers_ingestion_window():
+    settings = _agent_settings()
+    client = AgentMCPUpstreamClient(settings)
+    try:
+        assert client._client.timeout.read >= settings.mcp_ingestion_timeout_seconds
+        assert client._client.timeout.connect >= 20.0
+    finally:
+        import asyncio
+
+        asyncio.run(client.close())
+
+
 @pytest.fixture
 def knowledge_backend() -> FakeKnowledgeBackendClient:
     return FakeKnowledgeBackendClient()
@@ -486,7 +501,7 @@ async def client_session(
 
 
 @pytest.mark.anyio
-async def test_agent_mcp_exposes_exactly_seventeen_tools(client_session):
+async def test_agent_mcp_exposes_exactly_eighteen_tools(client_session):
     tools = await client_session.list_tools()
     assert sorted(tool.name for tool in tools.tools) == [
         "evaluate_answer",
@@ -494,6 +509,7 @@ async def test_agent_mcp_exposes_exactly_seventeen_tools(client_session):
         "get_adaptive_session",
         "generate_quiz",
         "kg_add_knowledge_fragment",
+        "kg_attach_concept_evidence",
         "kg_create_concept",
         "kg_get_learning_context",
         "kg_get_neighborhood",
@@ -673,4 +689,4 @@ async def test_agent_streamable_http_client_works_with_documented_url(
                     await session.initialize()
                     tools = await session.list_tools()
 
-    assert len(tools.tools) == 17
+    assert len(tools.tools) == 18

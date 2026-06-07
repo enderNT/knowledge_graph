@@ -19,6 +19,7 @@ from app.schemas import (
     AdaptiveSessionConstraints,
     AdaptiveSessionSnapshot,
     AdaptiveSessionSummary,
+    AttachConceptEvidenceResponse,
     CandidateHit,
     ClaimRecord,
     ConceptRecord,
@@ -67,6 +68,7 @@ class KnowledgeStore(Protocol):
     async def search_candidates(self, *, query: str, domain_hint: str | None, query_embedding: list[float] | None, limit: int) -> list[CandidateHit]: ...
     async def create_claim(self, *, text: str, confidence: float, status: str, embedding: list[float]) -> ClaimRecord: ...
     async def create_relation(self, *, from_ref: str, relation: str, to_ref: str, evidence_episode_id: str | None, confidence: float | None = None) -> bool: ...
+    async def attach_concept_evidence(self, *, concept_ref: str, episode_id: str, link_episode_claims: bool = True) -> AttachConceptEvidenceResponse: ...
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None: ...
     async def link_claim_to_episode(self, claim_uid: str, episode_id: str, confidence: float | None = None) -> None: ...
     async def link_claim_to_concept(self, claim_uid: str, concept_uid: str, confidence: float | None = None) -> None: ...
@@ -450,76 +452,19 @@ class ArcadeKnowledgeStore:
         if query_embedding:
             query_embedding = await self._normalize_embedding(query_embedding)
 
-        exact_rows = await self.client.query(
-            (
-                "SELECT uid, canonical_name, domain, description, aliases, embedding FROM Concept "
-                "WHERE normalized_name = :normalized LIMIT :limit"
-            ),
-            {"normalized": normalized, "limit": limit},
+        scan_rows = await self.client.query(
+            "SELECT uid, canonical_name, normalized_name, domain, description, aliases, embedding FROM Concept"
         )
-        for row in exact_rows:
+        for row in scan_rows:
             if domain_hint and row.get("domain") != domain_hint:
                 continue
-            candidates[row["uid"]] = CandidateHit(
-                uid=row["uid"],
-                canonical_name=row["canonical_name"],
-                domain=row["domain"],
-                description=row.get("description") or "",
-                score=1.0,
-                reason="normalized_name",
-            )
-
-        alias_scan_rows = await self.client.query(
-            (
-                "SELECT uid, canonical_name, domain, description, aliases, embedding FROM Concept"
-            ),
-        )
-        for row in alias_scan_rows:
-            aliases = row.get("aliases") or []
-            matched_alias = next(
-                (alias for alias in aliases if normalize_text(alias) == normalized),
-                None,
-            )
-            if not matched_alias:
+            lexical_hit = _build_candidate_hit_from_row(row=row, normalized_query=normalized)
+            if lexical_hit is None:
                 continue
-            concept_uid = row["uid"]
-            if domain_hint and row.get("domain") != domain_hint:
+            existing = candidates.get(lexical_hit.uid)
+            if existing and _candidate_sort_key(existing) >= _candidate_sort_key(lexical_hit):
                 continue
-            candidates[concept_uid] = CandidateHit(
-                uid=concept_uid,
-                canonical_name=row["canonical_name"],
-                domain=row["domain"],
-                description=row.get("description") or "",
-                score=0.98,
-                reason="alias",
-                matched_alias=matched_alias,
-            )
-
-        try:
-            fulltext_rows = await self.client.query(
-                (
-                    "SELECT uid, canonical_name, domain, description, aliases, embedding FROM Concept "
-                    "WHERE SEARCH_INDEX('Concept[canonical_name]', :query)"
-                ),
-                {"query": query},
-            )
-        except httpx.HTTPStatusError:
-            fulltext_rows = []
-        for row in fulltext_rows[: limit * 2]:
-            if domain_hint and row.get("domain") != domain_hint:
-                continue
-            score = 0.82
-            existing = candidates.get(row["uid"])
-            if existing and existing.score >= score:
-                continue
-            candidates[row["uid"]] = CandidateHit(
-                uid=row["uid"],
-                canonical_name=row["canonical_name"],
-                domain=row["domain"],
-                description=row.get("description") or "",
-                score=score,
-                reason="full_text",
-            )
+            candidates[lexical_hit.uid] = lexical_hit
 
         if query_embedding:
             try:
@@ -537,9 +482,7 @@ class ArcadeKnowledgeStore:
                     continue
                 score = max(0.0, min(1.0, 1.0 - float(row.get("distance", 1.0))))
                 existing = candidates.get(row["uid"])
-                if existing and existing.score >= score:
-                    continue
-                candidates[row["uid"]] = CandidateHit(
+                vector_hit = CandidateHit(
                     uid=row["uid"],
                     canonical_name=row["canonical_name"],
                     domain=row.get("domain") or "",
@@ -547,8 +490,11 @@ class ArcadeKnowledgeStore:
                     score=score,
                     reason="vector",
                 )
+                if existing and _candidate_sort_key(existing) >= _candidate_sort_key(vector_hit):
+                    continue
+                candidates[row["uid"]] = vector_hit
 
-        results = sorted(candidates.values(), key=lambda item: item.score, reverse=True)
+        results = sorted(candidates.values(), key=_candidate_sort_key, reverse=True)
         return results[:limit]
 
     async def create_claim(self, *, text: str, confidence: float, status: str, embedding: list[float]) -> ClaimRecord:
@@ -617,6 +563,38 @@ class ArcadeKnowledgeStore:
                 "evidence_episode_id": evidence_episode_id,
                 "created_at": utcnow_iso(),
             },
+        )
+
+    async def attach_concept_evidence(
+        self,
+        *,
+        concept_ref: str,
+        episode_id: str,
+        link_episode_claims: bool = True,
+    ) -> AttachConceptEvidenceResponse:
+        concept = await self.get_concept(concept_ref)
+        episode = await self.get_episode(episode_id)
+        if concept is None or episode is None:
+            raise ValueError("concept or episode not found")
+        await self.link_concept_to_episode(concept.uid, episode_id)
+        linked_claim_uids: set[str] = set()
+        if link_episode_claims:
+            claim_rows = await self._safe_query(
+                (
+                    "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
+                    ".in('SUPPORTED_BY'){type: Claim, as: claim} "
+                    "RETURN claim.uid as uid"
+                ),
+                {"uid": episode_id},
+            )
+            linked_claim_uids = {str(row.get("uid") or "") for row in claim_rows if row.get("uid")}
+            for claim_uid in linked_claim_uids:
+                await self.link_claim_to_concept(claim_uid, concept.uid)
+        return AttachConceptEvidenceResponse(
+            status="attached",
+            concept_uid=concept.uid,
+            episode_id=episode_id,
+            linked_claim_count=len(linked_claim_uids),
         )
 
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None:
@@ -1882,18 +1860,21 @@ class InMemoryKnowledgeStore:
         for concept in self.concepts.values():
             if domain_hint and concept.domain != domain_hint:
                 continue
-            if concept.normalized_name == normalized:
-                score = 1.0
-                reason = "normalized_name"
-            elif normalized in [normalize_text(alias) for alias in concept.aliases]:
-                score = 0.98
-                reason = "alias"
-            elif normalized in concept.normalized_name:
-                score = 0.85
-                reason = "full_text"
-            else:
-                score = cosine_similarity(query_embedding, concept.embedding) if query_embedding else 0.0
-                reason = "vector"
+            lexical_hit = _build_candidate_hit_from_row(
+                row={
+                    "uid": concept.uid,
+                    "canonical_name": concept.canonical_name,
+                    "normalized_name": concept.normalized_name,
+                    "domain": concept.domain,
+                    "description": concept.description,
+                    "aliases": concept.aliases,
+                },
+                normalized_query=normalized,
+            )
+            if lexical_hit is not None:
+                results.append(lexical_hit)
+                continue
+            score = cosine_similarity(query_embedding, concept.embedding) if query_embedding else 0.0
             if score <= 0:
                 continue
             results.append(
@@ -1903,10 +1884,10 @@ class InMemoryKnowledgeStore:
                     domain=concept.domain,
                     description=concept.description,
                     score=score,
-                    reason=reason,
+                    reason="vector",
                 )
             )
-        results.sort(key=lambda item: item.score, reverse=True)
+        results.sort(key=_candidate_sort_key, reverse=True)
         return results[:limit]
 
     async def create_claim(self, *, text: str, confidence: float, status: str, embedding: list[float]) -> ClaimRecord:
@@ -1945,6 +1926,30 @@ class InMemoryKnowledgeStore:
         created = edge not in self.relations
         self.relations.add(edge)
         return created
+
+    async def attach_concept_evidence(
+        self,
+        *,
+        concept_ref: str,
+        episode_id: str,
+        link_episode_claims: bool = True,
+    ) -> AttachConceptEvidenceResponse:
+        concept = await self.get_concept(concept_ref)
+        episode = await self.get_episode(episode_id)
+        if concept is None or episode is None:
+            raise ValueError("concept or episode not found")
+        self.concept_mentions.add((concept.uid, episode_id))
+        linked_claim_uids: set[str] = set()
+        if link_episode_claims:
+            linked_claim_uids = {claim_uid for claim_uid, supported_episode_id in self.claim_support if supported_episode_id == episode_id}
+            for claim_uid in linked_claim_uids:
+                self.claim_explains.add((claim_uid, concept.uid))
+        return AttachConceptEvidenceResponse(
+            status="attached",
+            concept_uid=concept.uid,
+            episode_id=episode_id,
+            linked_claim_count=len(linked_claim_uids),
+        )
 
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None:
         self.concept_mentions.add((concept_uid, episode_id))
@@ -2259,6 +2264,47 @@ def _merge_alias_lists(existing: list[str], incoming: list[str]) -> list[str]:
         merged.append(alias)
         seen.add(key)
     return merged
+
+
+def _build_candidate_hit_from_row(*, row: dict[str, Any], normalized_query: str) -> CandidateHit | None:
+    aliases = row.get("aliases") or []
+    normalized_name = normalize_text(str(row.get("normalized_name") or row.get("canonical_name") or ""))
+    matched_alias = next((alias for alias in aliases if normalize_text(alias) == normalized_query), None)
+
+    if normalized_name == normalized_query:
+        score = 1.0
+        reason = "normalized_name"
+    elif matched_alias:
+        score = 0.98
+        reason = "alias"
+    elif normalized_query and normalized_query in normalized_name:
+        score = 0.85
+        reason = "full_text"
+    else:
+        return None
+
+    return CandidateHit(
+        uid=str(row["uid"]),
+        canonical_name=str(row.get("canonical_name") or ""),
+        domain=str(row.get("domain") or ""),
+        description=str(row.get("description") or ""),
+        score=score,
+        reason=reason,
+        matched_alias=matched_alias,
+    )
+
+
+def _candidate_sort_key(item: CandidateHit) -> tuple[float, int, int]:
+    return (item.score, _candidate_reason_priority(item.reason), -len(item.canonical_name))
+
+
+def _candidate_reason_priority(reason: str) -> int:
+    return {
+        "normalized_name": 4,
+        "alias": 3,
+        "full_text": 2,
+        "vector": 1,
+    }.get(reason, 0)
 
 
 def _tutor_context_concept(concept: ConceptRecord) -> TutorContextConcept:

@@ -48,6 +48,19 @@ class CreateConceptRequest(BaseModel):
     description: str = ""
 
 
+class AttachConceptEvidenceRequest(BaseModel):
+    concept_ref: str = Field(min_length=1)
+    episode_id: str = Field(min_length=1)
+    link_episode_claims: bool = True
+
+
+class AttachConceptEvidenceResponse(BaseModel):
+    status: Literal["attached"]
+    concept_uid: str
+    episode_id: str
+    linked_claim_count: int = 0
+
+
 class LinkConceptsRequest(BaseModel):
     from_: str = Field(alias="from", min_length=1)
     relation: str
@@ -713,6 +726,7 @@ class ExtractedConcept(BaseModel):
     canonical_name: str
     aliases: list[str] = Field(default_factory=list)
     description: str = ""
+    evidence_quotes: list[str] = Field(default_factory=list)
     confidence: float = 0.8
 
     @field_validator("canonical_name")
@@ -725,6 +739,7 @@ class ExtractedClaim(BaseModel):
     text: str
     confidence: float = 0.8
     explains: list[str] = Field(default_factory=list)
+    supporting_quote: str | None = None
 
 
 class ExtractedRelation(BaseModel):
@@ -794,7 +809,7 @@ class JobRecord(BaseModel):
 
 
 class ConceptResolution(BaseModel):
-    strategy: Literal["created", "updated", "matched", "ambiguous"]
+    strategy: Literal["created", "updated", "matched", "ambiguous", "rejected"]
     concept: ConceptRecord | None = None
     needs_review_reason: str | None = None
 

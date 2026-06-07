@@ -616,7 +616,7 @@ class OpenAICompatibleProvider(AIProvider):
         self.client = httpx.AsyncClient(
             base_url=settings.openai_base_url.rstrip("/") + "/",
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            timeout=60.0,
+            timeout=httpx.Timeout(settings.openai_timeout_seconds, connect=20.0),
         )
 
     async def embed(self, text: str) -> list[float]:
@@ -640,9 +640,13 @@ class OpenAICompatibleProvider(AIProvider):
             "Use only entities and facts explicitly present in the text. "
             "Do not invent concepts, do not output section headings, date labels, generic tags, or arbitrary adjacent word pairs. "
             "Prefer canonical noun phrases already present in the fragment. "
+            "You are responsible for semantic validation: only keep concepts that are meaningful, canonical, and useful as standalone graph nodes. "
+            "Do not emit partial fragments, isolated adjectives, or incomplete headings as concepts. "
             "Use tags only to infer domain/topics, not as concepts unless the text explicitly mentions them. "
-            "Concept items must include canonical_name, aliases, description, confidence. "
-            "Claim items must include text, confidence, explains. "
+            "Concept items must include canonical_name, aliases, description, evidence_quotes, confidence. "
+            "Each concept must include 1 to 3 short evidence_quotes copied verbatim from the text. "
+            "Claim items must include text, confidence, explains, supporting_quote. "
+            "Each claim supporting_quote must be copied verbatim from the text. "
             "Relation items must include from_name, relation, to_name, confidence. "
             "Allowed relation values: PART_OF, IS_A, RELATED_TO, EXPLAINS, CONTRASTS_WITH, "
             "PREREQUISITE_FOR, SUPPORTED_BY, MENTIONED_IN, ALIAS_OF."
@@ -657,7 +661,6 @@ class OpenAICompatibleProvider(AIProvider):
                 "chat/completions",
                 json={
                     "model": self.settings.openai_chat_model,
-                    "temperature": 0.1,
                     "response_format": {"type": "json_object"},
                     "messages": [
                         {"role": "system", "content": system_prompt},
@@ -669,14 +672,143 @@ class OpenAICompatibleProvider(AIProvider):
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
             result = ExtractionResult.model_validate(json.loads(content))
-            return self.fallback_provider.refine_extraction(
-                result,
-                text,
-                tags,
-                augment_from_heuristics=False,
+            return self._sanitize_llm_extraction(result, text, tags)
+        except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            raise ValueError(f"llm extraction failed: {message}") from exc
+
+    def _sanitize_llm_extraction(self, result: ExtractionResult, text: str, tags: list[str]) -> ExtractionResult:
+        domain = tags[0].strip().title() if tags else (result.domain.strip() or "General")
+        topics = [
+            self.fallback_provider._titleize_phrase(topic)
+            for topic in dedupe_preserve_order([domain, *result.topics])
+            if topic.strip()
+        ]
+        refined_concepts = self._sanitize_concepts(result.concepts, text)
+        concept_names = [item["canonical_name"] for item in refined_concepts]
+        refined_claims = self._sanitize_claims(result.claims, concept_names, text)
+        refined_relations = self._sanitize_relations(result.relations, concept_names)
+        return ExtractionResult.model_validate(
+            {
+                "domain": domain,
+                "topics": topics or [domain],
+                "concepts": refined_concepts,
+                "claims": refined_claims[:8],
+                "relations": refined_relations[:12],
+            }
+        )
+
+    def _sanitize_concepts(self, concepts: list[Any], text: str) -> list[dict[str, Any]]:
+        concepts_by_name: dict[str, dict[str, Any]] = {}
+        for concept in concepts:
+            raw_name = concept.canonical_name if hasattr(concept, "canonical_name") else concept.get("canonical_name", "")
+            cleaned_name = self.fallback_provider._clean_concept_name(raw_name)
+            if not self.fallback_provider._is_valid_concept(cleaned_name):
+                continue
+            evidence_source = concept.evidence_quotes if hasattr(concept, "evidence_quotes") else concept.get("evidence_quotes", [])
+            evidence_quotes = self._sanitize_quotes(evidence_source, text)
+            key = normalize_text(cleaned_name)
+            aliases = [
+                self.fallback_provider._titleize_phrase(alias)
+                for alias in (concept.aliases if hasattr(concept, "aliases") else concept.get("aliases", []))
+                if alias and normalize_text(alias) != key
+            ]
+            description = (concept.description if hasattr(concept, "description") else concept.get("description", "")).strip()
+            confidence = float(concept.confidence if hasattr(concept, "confidence") else concept.get("confidence", 0.75))
+            if key in concepts_by_name:
+                existing = concepts_by_name[key]
+                existing["aliases"] = dedupe_preserve_order([*existing["aliases"], *aliases])
+                existing["evidence_quotes"] = dedupe_preserve_order([*existing["evidence_quotes"], *evidence_quotes])[:3]
+                existing["confidence"] = max(existing["confidence"], confidence)
+                if not existing["description"] and description:
+                    existing["description"] = description
+                continue
+            concepts_by_name[key] = {
+                "canonical_name": cleaned_name,
+                "aliases": dedupe_preserve_order(aliases),
+                "description": description,
+                "evidence_quotes": evidence_quotes[:3],
+                "confidence": confidence,
+            }
+        return list(concepts_by_name.values())[:20]
+
+    def _sanitize_claims(self, claims: list[Any], concept_names: list[str], text: str) -> list[dict[str, Any]]:
+        refined_claims: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for claim in claims:
+            text_value = (claim.text if hasattr(claim, "text") else claim.get("text", "")).strip()
+            if not text_value:
+                continue
+            normalized = normalize_text(text_value)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            explains_source = claim.explains if hasattr(claim, "explains") else claim.get("explains", [])
+            explains = [
+                matched
+                for raw in explains_source
+                if (matched := self.fallback_provider._find_matching_concept(raw, concept_names))
+            ]
+            if not explains:
+                explains = self.fallback_provider._match_concepts_in_text(text_value, concept_names)[:3]
+            supporting_quote = claim.supporting_quote if hasattr(claim, "supporting_quote") else claim.get("supporting_quote")
+            supporting_quote = self._sanitize_quote(supporting_quote, text)
+            confidence = float(claim.confidence if hasattr(claim, "confidence") else claim.get("confidence", 0.75))
+            if not explains and not supporting_quote:
+                continue
+            refined_claims.append(
+                {
+                    "text": text_value,
+                    "confidence": confidence,
+                    "explains": dedupe_preserve_order(explains),
+                    "supporting_quote": supporting_quote,
+                }
             )
-        except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError):
-            return await self.fallback_provider.extract(text, language, tags)
+        return refined_claims
+
+    def _sanitize_relations(self, relations: list[Any], concept_names: list[str]) -> list[dict[str, Any]]:
+        refined_relations: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for relation in relations:
+            from_name = self.fallback_provider._find_matching_concept(relation.from_name, concept_names)
+            to_name = self.fallback_provider._find_matching_concept(relation.to_name, concept_names)
+            if not from_name or not to_name or from_name == to_name:
+                continue
+            key = (from_name, relation.relation, to_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            refined_relations.append(
+                {
+                    "from_name": from_name,
+                    "relation": relation.relation,
+                    "to_name": to_name,
+                    "confidence": relation.confidence,
+                }
+            )
+        return refined_relations
+
+    def _sanitize_quotes(self, quotes: list[str], text: str) -> list[str]:
+        sanitized: list[str] = []
+        for quote in quotes:
+            cleaned = self._sanitize_quote(quote, text)
+            if cleaned:
+                sanitized.append(cleaned)
+        return dedupe_preserve_order(sanitized)
+
+    def _sanitize_quote(self, quote: str | None, text: str) -> str | None:
+        if not quote:
+            return None
+        cleaned = re.sub(r"\s+", " ", quote.strip().strip("\"'")).strip()
+        if not cleaned:
+            return None
+        normalized_text = normalize_text(text)
+        normalized_quote = normalize_text(cleaned)
+        if len(normalized_quote) < 6:
+            return None
+        if normalized_quote not in normalized_text:
+            return None
+        return cleaned
 
 
 def build_ai_provider(settings: Settings) -> AIProvider:

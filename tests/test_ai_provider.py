@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
-from app.ai_provider import StubAIProvider
+import pytest
+
+from app.ai_provider import OpenAICompatibleProvider, StubAIProvider
+from app.config import Settings
 from app.utils import fit_embedding_dimensions
 
 
@@ -87,3 +91,100 @@ def test_fit_embedding_dimensions_reduces_to_target_size():
 
     assert len(fitted) == 4
     assert fitted == [1.0, 4.0, 7.0, 10.0]
+
+
+def test_openai_extractor_sanitizes_without_heuristic_augmentation():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "domain": "Programacion COBOL",
+                                    "topics": ["Programacion COBOL"],
+                                    "concepts": [
+                                        {
+                                            "canonical_name": "Formato Decimal Empaquetado",
+                                            "aliases": ["decimal empaquetado"],
+                                            "description": "Representa numeros en formato compacto.",
+                                            "evidence_quotes": ["Packed Decimal Format"],
+                                            "confidence": 0.92,
+                                        },
+                                        {
+                                            "canonical_name": "Simple",
+                                            "aliases": [],
+                                            "description": "Generico.",
+                                            "evidence_quotes": [],
+                                            "confidence": 0.51,
+                                        },
+                                    ],
+                                    "claims": [
+                                        {
+                                            "text": "Packed Decimal Format is a numeric representation in COBOL.",
+                                            "confidence": 0.91,
+                                            "explains": ["Formato Decimal Empaquetado"],
+                                            "supporting_quote": "Packed Decimal Format",
+                                        }
+                                    ],
+                                    "relations": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, *_args, **_kwargs):
+            return _FakeResponse()
+
+    provider.client = _FakeClient()
+
+    text = (
+        "Numeric Representations in COBOL\n"
+        "- Packed Decimal Format\n"
+        "- Single Precision Floating Point\n"
+    )
+    extraction = asyncio.run(provider.extract(text, "en", ["Programacion COBOL"]))
+
+    concept_names = [item.canonical_name for item in extraction.concepts]
+    assert "Formato Decimal Empaquetado" in concept_names
+    assert "Simple" in concept_names
+    assert extraction.concepts[0].evidence_quotes == ["Packed Decimal Format"]
+    assert extraction.claims[0].supporting_quote == "Packed Decimal Format"
+
+
+def test_openai_extractor_fails_instead_of_falling_back_to_heuristics():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+
+    class _FailingClient:
+        async def post(self, *_args, **_kwargs):
+            raise ValueError("boom")
+
+    provider.client = _FailingClient()
+
+    with pytest.raises(ValueError, match="llm extraction failed"):
+        asyncio.run(provider.extract("Texto de prueba", "es", ["General"]))

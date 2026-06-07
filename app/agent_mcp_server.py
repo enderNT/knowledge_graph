@@ -71,6 +71,14 @@ class AgentUpstreamProtocol(Protocol):
         description: str = "",
     ) -> dict[str, Any]: ...
 
+    async def attach_concept_evidence(
+        self,
+        *,
+        concept_ref: str,
+        episode_id: str,
+        link_episode_claims: bool = True,
+    ) -> dict[str, Any]: ...
+
     async def upsert_concept(
         self,
         *,
@@ -340,6 +348,21 @@ def create_agent_mcp_server(
                 aliases=aliases,
                 domain=domain,
                 description=description,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_attach_concept_evidence")
+    async def kg_attach_concept_evidence(
+        concept_ref: Annotated[str, Field(min_length=1)],
+        episode_id: Annotated[str, Field(min_length=1)],
+        link_episode_claims: bool = True,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.attach_concept_evidence(
+                concept_ref=concept_ref,
+                episode_id=episode_id,
+                link_episode_claims=link_episode_claims,
             )
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc

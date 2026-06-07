@@ -96,6 +96,23 @@ class MCPBackendClient:
             },
         )
 
+    async def attach_concept_evidence(
+        self,
+        *,
+        concept_ref: str,
+        episode_id: str,
+        link_episode_claims: bool = True,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/concepts/evidence",
+            json={
+                "concept_ref": concept_ref,
+                "episode_id": episode_id,
+                "link_episode_claims": link_episode_claims,
+            },
+        )
+
     async def get_job(self, job_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/v1/jobs/{job_id}")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 
 from app.ai_provider import AIProvider
 from app.config import Settings
@@ -12,8 +13,8 @@ from app.schemas import (
     IngestionSummary,
     UpsertConceptRequest,
 )
-from app.store import KnowledgeStore
-from app.utils import make_prefixed_id
+from app.store import ConceptConflictError, KnowledgeStore
+from app.utils import make_prefixed_id, normalize_text
 
 
 class IngestionService:
@@ -60,10 +61,24 @@ class IngestionService:
             extraction = await self.ai_provider.extract(episode.text, episode.language, episode.tags)
             summary = IngestionSummary(episode_id=episode.uid, domain=extraction.domain)
             resolved_concepts: dict[str, ConceptResolution] = {}
+            claim_support_counts = Counter(
+                concept_name
+                for extracted_claim in extraction.claims
+                for concept_name in extracted_claim.explains
+            )
+            linked_claim_counts = Counter()
 
             for extracted_concept in extraction.concepts:
                 concept_embedding = await self.ai_provider.embed(
-                    f"{extracted_concept.canonical_name}\n{extracted_concept.description}"
+                    "\n".join(
+                        part
+                        for part in [
+                            extracted_concept.canonical_name,
+                            extracted_concept.description,
+                            *extracted_concept.evidence_quotes,
+                        ]
+                        if part
+                    )
                 )
                 candidates = await self.store.search_candidates(
                     query=extracted_concept.canonical_name,
@@ -78,10 +93,12 @@ class IngestionService:
                     extracted_concept.aliases,
                     extracted_concept.confidence,
                     concept_embedding,
+                    extracted_concept.evidence_quotes,
+                    claim_support_counts.get(extracted_concept.canonical_name, 0),
                     candidates,
                 )
                 resolved_concepts[extracted_concept.canonical_name] = resolution
-                if resolution.strategy == "ambiguous":
+                if resolution.strategy in {"ambiguous", "rejected"}:
                     summary.needs_review.append(resolution.needs_review_reason or extracted_concept.canonical_name)
                     continue
                 if not resolution.concept:
@@ -114,6 +131,32 @@ class IngestionService:
                             concept_resolution.concept.uid,
                             extracted_claim.confidence,
                         )
+                        linked_claim_counts[concept_name] += 1
+
+            for extracted_concept in extraction.concepts:
+                concept_resolution = resolved_concepts.get(extracted_concept.canonical_name)
+                if not concept_resolution or not concept_resolution.concept:
+                    continue
+                if linked_claim_counts[extracted_concept.canonical_name] > 0:
+                    continue
+                quote = self._best_evidence_quote(extracted_concept.evidence_quotes)
+                if quote is None:
+                    continue
+                quote_embedding = await self.ai_provider.embed(quote)
+                claim = await self.store.create_claim(
+                    text=quote,
+                    confidence=max(0.6, min(0.95, extracted_concept.confidence)),
+                    status="active",
+                    embedding=quote_embedding,
+                )
+                summary.created_claims += 1
+                await self.store.link_claim_to_episode(claim.uid, episode.uid, extracted_concept.confidence)
+                await self.store.link_claim_to_concept(
+                    claim.uid,
+                    concept_resolution.concept.uid,
+                    extracted_concept.confidence,
+                )
+                linked_claim_counts[extracted_concept.canonical_name] += 1
 
             for relation in extraction.relations:
                 from_resolution = resolved_concepts.get(relation.from_name)
@@ -156,21 +199,21 @@ class IngestionService:
         aliases: list[str],
         confidence: float,
         embedding: list[float],
+        evidence_quotes: list[str],
+        claim_support_count: int,
         candidates: list[CandidateHit],
     ) -> ConceptResolution:
         if candidates:
             top = candidates[0]
             second = candidates[1] if len(candidates) > 1 else None
             if top.reason in {"normalized_name", "alias"}:
-                concept, _ = await self.store.upsert_concept(
-                    UpsertConceptRequest(
-                        canonical_name=top.canonical_name,
-                        aliases=aliases,
-                        domain=domain,
-                        description=description,
-                    ),
+                concept = await self._upsert_or_reuse_existing_identity(
+                    canonical_name=top.canonical_name,
+                    aliases=aliases,
+                    domain=domain,
+                    description=description,
+                    confidence=confidence,
                     embedding=embedding,
-                    source_confidence=confidence,
                 )
                 return ConceptResolution(strategy="matched", concept=concept)
 
@@ -183,26 +226,128 @@ class IngestionService:
                             f"{top.canonical_name} and {second.canonical_name}"
                         ),
                     )
-                concept, _ = await self.store.upsert_concept(
-                    UpsertConceptRequest(
-                        canonical_name=top.canonical_name,
-                        aliases=aliases,
-                        domain=domain,
-                        description=description,
-                    ),
+                concept = await self._upsert_or_reuse_existing_identity(
+                    canonical_name=top.canonical_name,
+                    aliases=aliases,
+                    domain=domain,
+                    description=description,
+                    confidence=confidence,
                     embedding=embedding,
-                    source_confidence=confidence,
                 )
                 return ConceptResolution(strategy="updated", concept=concept)
 
-        concept, created = await self.store.upsert_concept(
-            UpsertConceptRequest(
-                canonical_name=canonical_name,
-                aliases=aliases,
-                domain=domain,
-                description=description,
-            ),
+        rejection_reason = self._reject_new_concept_reason(
+            canonical_name=canonical_name,
+            evidence_quotes=evidence_quotes,
+            claim_support_count=claim_support_count,
+        )
+        if rejection_reason:
+            return ConceptResolution(
+                strategy="rejected",
+                needs_review_reason=rejection_reason,
+            )
+
+        concept, created = await self._upsert_with_exact_identity_fallback(
+            canonical_name=canonical_name,
+            aliases=aliases,
+            domain=domain,
+            description=description,
+            confidence=confidence,
             embedding=embedding,
-            source_confidence=confidence,
         )
         return ConceptResolution(strategy="created" if created else "updated", concept=concept)
+
+    def _reject_new_concept_reason(
+        self,
+        *,
+        canonical_name: str,
+        evidence_quotes: list[str],
+        claim_support_count: int,
+    ) -> str | None:
+        normalized = normalize_text(canonical_name)
+        if not normalized:
+            return f"rejected weak concept '{canonical_name}': empty normalized name"
+        if claim_support_count <= 0 and not self._best_evidence_quote(evidence_quotes):
+            return f"rejected weak concept '{canonical_name}': missing claim support or traceable evidence"
+        return None
+
+    @staticmethod
+    def _best_evidence_quote(evidence_quotes: list[str]) -> str | None:
+        for quote in evidence_quotes:
+            normalized = normalize_text(quote)
+            if len(normalized) >= 12 and len(normalized.split()) >= 2:
+                return quote.strip()
+        return None
+
+    async def _upsert_or_reuse_existing_identity(
+        self,
+        *,
+        canonical_name: str,
+        aliases: list[str],
+        domain: str,
+        description: str,
+        confidence: float,
+        embedding: list[float],
+    ):
+        concept, _ = await self._upsert_with_exact_identity_fallback(
+            canonical_name=canonical_name,
+            aliases=aliases,
+            domain=domain,
+            description=description,
+            confidence=confidence,
+            embedding=embedding,
+        )
+        return concept
+
+    async def _upsert_with_exact_identity_fallback(
+        self,
+        *,
+        canonical_name: str,
+        aliases: list[str],
+        domain: str,
+        description: str,
+        confidence: float,
+        embedding: list[float],
+    ):
+        payload = UpsertConceptRequest(
+            canonical_name=canonical_name,
+            aliases=aliases,
+            domain=domain,
+            description=description,
+        )
+        try:
+            return await self.store.upsert_concept(
+                payload,
+                embedding=embedding,
+                source_confidence=confidence,
+            )
+        except ConceptConflictError:
+            existing = await self._find_existing_identity_match(canonical_name=canonical_name, aliases=aliases)
+            if existing is None:
+                raise
+            reused_payload = UpsertConceptRequest(
+                uid=existing.uid,
+                canonical_name=existing.canonical_name,
+                aliases=aliases,
+                domain=domain,
+                description=description or existing.description,
+            )
+            concept, _ = await self.store.upsert_concept(
+                reused_payload,
+                embedding=embedding,
+                source_confidence=confidence,
+            )
+            return concept, False
+
+    async def _find_existing_identity_match(
+        self,
+        *,
+        canonical_name: str,
+        aliases: list[str],
+    ):
+        references = [canonical_name, *aliases]
+        for ref in references:
+            existing = await self.store.get_concept(ref)
+            if existing is not None:
+                return existing
+        return None

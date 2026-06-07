@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.dependencies import require_private_api_access
-from app.schemas import CreateConceptRequest, LinkConceptsRequest, NeighborhoodResponse, UpsertConceptRequest
+from app.schemas import (
+    AttachConceptEvidenceRequest,
+    AttachConceptEvidenceResponse,
+    CreateConceptRequest,
+    LinkConceptsRequest,
+    NeighborhoodResponse,
+    UpsertConceptRequest,
+)
 from app.store import ConceptConflictError, ConceptUpsertTargetNotFoundError
 
 
@@ -53,8 +60,23 @@ async def link_concepts(payload: LinkConceptsRequest, services=Depends(require_p
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="source or target concept not found",
-        )
+    )
     return {"status": "linked"}
+
+
+@router.post("/evidence", response_model=AttachConceptEvidenceResponse)
+async def attach_concept_evidence(
+    payload: AttachConceptEvidenceRequest,
+    services=Depends(require_private_api_access),
+) -> AttachConceptEvidenceResponse:
+    try:
+        return await services.store.attach_concept_evidence(
+            concept_ref=payload.concept_ref,
+            episode_id=payload.episode_id,
+            link_episode_claims=payload.link_episode_claims,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/{concept_ref}/neighborhood", response_model=NeighborhoodResponse)

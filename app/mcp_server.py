@@ -72,6 +72,14 @@ class MCPBackendProtocol(Protocol):
         description: str = "",
     ) -> dict[str, Any]: ...
 
+    async def attach_concept_evidence(
+        self,
+        *,
+        concept_ref: str,
+        episode_id: str,
+        link_episode_claims: bool = True,
+    ) -> dict[str, Any]: ...
+
     async def upsert_concept(
         self,
         *,
@@ -257,6 +265,22 @@ def create_mcp_server(
                 aliases=aliases,
                 domain=domain,
                 description=description,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="attach_concept_evidence")
+    async def attach_concept_evidence(
+        concept_ref: Annotated[str, Field(min_length=1)],
+        episode_id: Annotated[str, Field(min_length=1)],
+        link_episode_claims: bool = True,
+    ) -> dict[str, Any]:
+        """Attach an episode as explicit evidence for a curated concept and optionally link episode claims."""
+        try:
+            return await backend.attach_concept_evidence(
+                concept_ref=concept_ref,
+                episode_id=episode_id,
+                link_episode_claims=link_episode_claims,
             )
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
