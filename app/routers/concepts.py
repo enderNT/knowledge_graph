@@ -3,20 +3,40 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.dependencies import require_private_api_access
-from app.schemas import LinkConceptsRequest, NeighborhoodResponse, UpsertConceptRequest
+from app.schemas import CreateConceptRequest, LinkConceptsRequest, NeighborhoodResponse, UpsertConceptRequest
+from app.store import ConceptConflictError, ConceptUpsertTargetNotFoundError
 
 
 router = APIRouter(prefix="/v1/concepts", tags=["concepts"])
 
 
+@router.post("")
+async def create_concept(payload: CreateConceptRequest, services=Depends(require_private_api_access)):
+    embedding = await services.ai_provider.embed(f"{payload.canonical_name}\n{payload.description}")
+    try:
+        concept = await services.store.create_concept(
+            payload,
+            embedding=embedding,
+            source_confidence=1.0,
+        )
+    except ConceptConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"concept": concept, "created": True}
+
+
 @router.put("/upsert")
 async def upsert_concept(payload: UpsertConceptRequest, services=Depends(require_private_api_access)):
     embedding = await services.ai_provider.embed(f"{payload.canonical_name}\n{payload.description}")
-    concept, created = await services.store.upsert_concept(
-        payload,
-        embedding=embedding,
-        source_confidence=1.0,
-    )
+    try:
+        concept, created = await services.store.upsert_concept(
+            payload,
+            embedding=embedding,
+            source_confidence=1.0,
+        )
+    except ConceptConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ConceptUpsertTargetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return {"concept": concept, "created": created}
 
 

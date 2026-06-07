@@ -11,9 +11,18 @@ from app.config import Settings
 from app.schema_bootstrap import ensure_database_and_schema
 from app.schemas import (
     ALLOWED_RELATIONS,
+    AdaptiveBlockAnswerKey,
+    AdaptiveBlockResponse,
+    AdaptiveBlockResult,
+    AdaptiveInteractionEvent,
+    AdaptiveItemSubmission,
+    AdaptiveSessionConstraints,
+    AdaptiveSessionSnapshot,
+    AdaptiveSessionSummary,
     CandidateHit,
     ClaimRecord,
     ConceptRecord,
+    CreateConceptRequest,
     EpisodeRecord,
     GetPedagogicalContextResponse,
     IngestionSummary,
@@ -23,6 +32,7 @@ from app.schemas import (
     NeighborhoodResponse,
     PEDAGOGICAL_RELATIONS,
     PedagogicalConceptState,
+    PedagogicalDimensionStates,
     PedagogicalDomainState,
     PedagogicalEvaluationEvent,
     PedagogicalRecentStats,
@@ -32,6 +42,8 @@ from app.schemas import (
     TutorContextConcept,
     TutorContextEvidence,
     TutorContextRelation,
+    TutorContextResolvedReference,
+    TutorContextResponse,
     TutorContextSourceFragment,
     UpsertConceptRequest,
     concept_ref_to_normalized,
@@ -49,6 +61,7 @@ class KnowledgeStore(Protocol):
     async def update_job(self, job_id: str, *, status: str, result: IngestionSummary | None = None, error: str | None = None) -> JobRecord: ...
     async def get_episode(self, episode_id: str) -> EpisodeRecord | None: ...
     async def update_episode(self, episode_id: str, *, status: str, error_message: str | None = None, embedding: list[float] | None = None) -> EpisodeRecord: ...
+    async def create_concept(self, payload: CreateConceptRequest, *, embedding: list[float], source_confidence: float) -> ConceptRecord: ...
     async def upsert_concept(self, payload: UpsertConceptRequest, *, embedding: list[float], source_confidence: float) -> tuple[ConceptRecord, bool]: ...
     async def get_concept(self, ref: str) -> ConceptRecord | None: ...
     async def search_candidates(self, *, query: str, domain_hint: str | None, query_embedding: list[float] | None, limit: int) -> list[CandidateHit]: ...
@@ -71,6 +84,26 @@ class KnowledgeStore(Protocol):
         max_depth: int,
         allowed_relations: set[str],
     ) -> list[dict[str, str | int]]: ...
+    async def get_adaptive_session(self, *, session_id: str) -> AdaptiveSessionSnapshot | None: ...
+    async def upsert_adaptive_session(self, session: AdaptiveSessionSnapshot) -> None: ...
+    async def append_adaptive_block_attempt(
+        self,
+        *,
+        session_id: str,
+        block: AdaptiveBlockResponse,
+        answer_keys: list[AdaptiveBlockAnswerKey],
+        submissions: list[AdaptiveItemSubmission],
+        interaction_events: list[AdaptiveInteractionEvent],
+        block_result: AdaptiveBlockResult | None,
+    ) -> None: ...
+
+
+class ConceptConflictError(ValueError):
+    pass
+
+
+class ConceptUpsertTargetNotFoundError(ValueError):
+    pass
 
 
 class ArcadeKnowledgeStore:
@@ -208,6 +241,26 @@ class ArcadeKnowledgeStore:
             raise ValueError(f"episode not found after update: {episode_id}")
         return episode
 
+    async def create_concept(
+        self,
+        payload: CreateConceptRequest,
+        *,
+        embedding: list[float],
+        source_confidence: float,
+    ) -> ConceptRecord:
+        embedding = await self._normalize_embedding(embedding)
+        normalized_name = normalize_text(payload.canonical_name)
+        await self._assert_concept_identity_available(
+            normalized_name=normalized_name,
+            aliases=payload.aliases,
+        )
+        return await self._create_concept_record(
+            payload=payload,
+            normalized_name=normalized_name,
+            embedding=embedding,
+            source_confidence=source_confidence,
+        )
+
     async def upsert_concept(
         self,
         payload: UpsertConceptRequest,
@@ -217,20 +270,28 @@ class ArcadeKnowledgeStore:
     ) -> tuple[ConceptRecord, bool]:
         embedding = await self._normalize_embedding(embedding)
         normalized_name = normalize_text(payload.canonical_name)
-        existing = await self.get_concept(payload.canonical_name)
+        existing = await self._get_concept_for_upsert(uid=payload.uid, normalized_name=normalized_name)
+        if payload.uid and not existing:
+            raise ConceptUpsertTargetNotFoundError(f"concept not found for uid: {payload.uid}")
         now = utcnow_iso()
         if existing:
             aliases = _merge_alias_lists(existing.aliases, payload.aliases)
+            await self._assert_concept_identity_available(
+                normalized_name=normalized_name,
+                aliases=aliases,
+                exclude_uid=existing.uid,
+            )
             await self.client.command(
                 (
                     "UPDATE Concept SET canonical_name = :canonical_name, description = :description, "
-                    "domain = :domain, aliases = :aliases, embedding = :embedding, "
+                    "normalized_name = :normalized_name, domain = :domain, aliases = :aliases, embedding = :embedding, "
                     "source_confidence = :source_confidence, updated_at = :updated_at "
                     "WHERE uid = :uid"
                 ),
                 {
                     "uid": existing.uid,
                     "canonical_name": payload.canonical_name,
+                    "normalized_name": normalized_name,
                     "description": payload.description or existing.description,
                     "domain": payload.domain,
                     "aliases": aliases,
@@ -246,32 +307,17 @@ class ArcadeKnowledgeStore:
                 raise ValueError("concept missing after update")
             return concept, False
 
-        concept_uid = make_prefixed_id("cn")
-        await self.client.command(
-            (
-                "CREATE VERTEX Concept SET uid = :uid, canonical_name = :canonical_name, "
-                "normalized_name = :normalized_name, description = :description, domain = :domain, "
-                "aliases = :aliases, embedding = :embedding, source_confidence = :source_confidence, "
-                "created_at = :created_at, updated_at = :updated_at"
-            ),
-            {
-                "uid": concept_uid,
-                "canonical_name": payload.canonical_name,
-                "normalized_name": normalized_name,
-                "description": payload.description,
-                "domain": payload.domain,
-                "aliases": payload.aliases,
-                "embedding": embedding,
-                "source_confidence": source_confidence,
-                "created_at": now,
-                "updated_at": now,
-            },
+        await self._assert_concept_identity_available(
+            normalized_name=normalized_name,
+            aliases=payload.aliases,
         )
-        await self._ensure_domain(payload.domain)
-        await self._ensure_aliases(concept_uid, payload.aliases)
-        concept = await self.get_concept(concept_uid)
-        if not concept:
-            raise ValueError("concept missing after create")
+        concept = await self._create_concept_record(
+            payload=payload,
+            normalized_name=normalized_name,
+            embedding=embedding,
+            source_confidence=source_confidence,
+            now=now,
+        )
         return concept, True
 
     async def get_concept(self, ref: str) -> ConceptRecord | None:
@@ -299,6 +345,97 @@ class ArcadeKnowledgeStore:
                 row["aliases"] = aliases
                 return ConceptRecord.model_validate(row)
         return None
+
+    async def _get_concept_for_upsert(self, *, uid: str | None, normalized_name: str) -> ConceptRecord | None:
+        if uid:
+            rows = await self.client.query(
+                (
+                    "SELECT uid, canonical_name, normalized_name, domain, description, aliases, embedding, "
+                    "created_at, updated_at FROM Concept WHERE uid = :uid LIMIT 1"
+                ),
+                {"uid": uid},
+            )
+            if not rows:
+                return None
+            rows[0]["aliases"] = rows[0].get("aliases") or []
+            return ConceptRecord.model_validate(rows[0])
+
+        rows = await self.client.query(
+            (
+                "SELECT uid, canonical_name, normalized_name, domain, description, aliases, embedding, "
+                "created_at, updated_at FROM Concept WHERE normalized_name = :normalized_name LIMIT 1"
+            ),
+            {"normalized_name": normalized_name},
+        )
+        if not rows:
+            return None
+        rows[0]["aliases"] = rows[0].get("aliases") or []
+        return ConceptRecord.model_validate(rows[0])
+
+    async def _create_concept_record(
+        self,
+        *,
+        payload: CreateConceptRequest | UpsertConceptRequest,
+        normalized_name: str,
+        embedding: list[float],
+        source_confidence: float,
+        now: str | None = None,
+    ) -> ConceptRecord:
+        concept_uid = make_prefixed_id("cn")
+        created_at = now or utcnow_iso()
+        await self.client.command(
+            (
+                "CREATE VERTEX Concept SET uid = :uid, canonical_name = :canonical_name, "
+                "normalized_name = :normalized_name, description = :description, domain = :domain, "
+                "aliases = :aliases, embedding = :embedding, source_confidence = :source_confidence, "
+                "created_at = :created_at, updated_at = :updated_at"
+            ),
+            {
+                "uid": concept_uid,
+                "canonical_name": payload.canonical_name,
+                "normalized_name": normalized_name,
+                "description": payload.description,
+                "domain": payload.domain,
+                "aliases": payload.aliases,
+                "embedding": embedding,
+                "source_confidence": source_confidence,
+                "created_at": created_at,
+                "updated_at": created_at,
+            },
+        )
+        await self._ensure_domain(payload.domain)
+        await self._ensure_aliases(concept_uid, payload.aliases)
+        concept = await self.get_concept(concept_uid)
+        if not concept:
+            raise ValueError("concept missing after create")
+        return concept
+
+    async def _assert_concept_identity_available(
+        self,
+        *,
+        normalized_name: str,
+        aliases: list[str],
+        exclude_uid: str | None = None,
+    ) -> None:
+        desired_tokens = {normalized_name, *(normalize_text(alias) for alias in aliases)}
+        desired_tokens.discard("")
+        if not desired_tokens:
+            return
+
+        rows = await self.client.query(
+            "SELECT uid, canonical_name, normalized_name, aliases FROM Concept",
+        )
+        for row in rows:
+            if exclude_uid and row["uid"] == exclude_uid:
+                continue
+            row_aliases = row.get("aliases") or []
+            existing_tokens = {row.get("normalized_name") or "", *(normalize_text(alias) for alias in row_aliases)}
+            existing_tokens.discard("")
+            overlap = sorted(desired_tokens.intersection(existing_tokens))
+            if overlap:
+                raise ConceptConflictError(
+                    f"concept identity already used by {row['canonical_name']} ({row['uid']}): {', '.join(overlap)}"
+                )
 
     async def search_candidates(
         self,
@@ -779,6 +916,7 @@ class ArcadeKnowledgeStore:
         concept_rows = await self._safe_query(
             (
                 "SELECT user_id, concept_uid, concept_name, domain, mastery_score_0_to_100, mastery_label, "
+                "dimensions_json, confidence_0_to_1, trend, priority_score, last_block_id, "
                 "recent_history_json, recent_stats_json, weaknesses_json, detected_gaps_json, "
                 "suggested_questions_json, effective_depth_used, last_evaluated_at, updated_at, "
                 "recalculation_traces_json FROM UserConceptMastery WHERE user_id = :user_id"
@@ -809,6 +947,11 @@ class ArcadeKnowledgeStore:
                 domain=row["domain"],
                 mastery_score_0_to_100=float(row.get("mastery_score_0_to_100") or 0.0),
                 mastery_label=row.get("mastery_label") or "muy bajo",
+                dimensions=self._parse_model(row.get("dimensions_json"), PedagogicalDimensionStates),
+                confidence_0_to_1=float(row.get("confidence_0_to_1") or 0.25),
+                trend=row.get("trend") or "insufficient_data",
+                priority_score=float(row.get("priority_score") or 0.5),
+                last_block_id=row.get("last_block_id"),
                 recent_history=self._parse_model_list(row.get("recent_history_json"), PedagogicalEvaluationEvent),
                 recent_stats=self._parse_model(row.get("recent_stats_json"), PedagogicalRecentStats),
                 weaknesses=self._parse_string_list(row.get("weaknesses_json")),
@@ -855,6 +998,11 @@ class ArcadeKnowledgeStore:
             "domain": state.domain,
             "mastery_score_0_to_100": state.mastery_score_0_to_100,
             "mastery_label": state.mastery_label,
+            "dimensions_json": state.dimensions.model_dump_json(),
+            "confidence_0_to_1": state.confidence_0_to_1,
+            "trend": state.trend,
+            "priority_score": state.priority_score,
+            "last_block_id": state.last_block_id,
             "recent_history_json": json.dumps([item.model_dump() for item in state.recent_history]),
             "recent_stats_json": state.recent_stats.model_dump_json(),
             "weaknesses_json": json.dumps(state.weaknesses),
@@ -874,6 +1022,8 @@ class ArcadeKnowledgeStore:
                 (
                     "UPDATE UserConceptMastery SET concept_name = :concept_name, domain = :domain, "
                     "mastery_score_0_to_100 = :mastery_score_0_to_100, mastery_label = :mastery_label, "
+                    "dimensions_json = :dimensions_json, confidence_0_to_1 = :confidence_0_to_1, "
+                    "trend = :trend, priority_score = :priority_score, last_block_id = :last_block_id, "
                     "recent_history_json = :recent_history_json, recent_stats_json = :recent_stats_json, "
                     "weaknesses_json = :weaknesses_json, detected_gaps_json = :detected_gaps_json, "
                     "suggested_questions_json = :suggested_questions_json, effective_depth_used = :effective_depth_used, "
@@ -888,7 +1038,9 @@ class ArcadeKnowledgeStore:
             (
                 "INSERT INTO UserConceptMastery SET user_id = :user_id, concept_uid = :concept_uid, "
                 "concept_name = :concept_name, domain = :domain, mastery_score_0_to_100 = :mastery_score_0_to_100, "
-                "mastery_label = :mastery_label, recent_history_json = :recent_history_json, "
+                "mastery_label = :mastery_label, dimensions_json = :dimensions_json, "
+                "confidence_0_to_1 = :confidence_0_to_1, trend = :trend, priority_score = :priority_score, "
+                "last_block_id = :last_block_id, recent_history_json = :recent_history_json, "
                 "recent_stats_json = :recent_stats_json, weaknesses_json = :weaknesses_json, "
                 "detected_gaps_json = :detected_gaps_json, suggested_questions_json = :suggested_questions_json, "
                 "effective_depth_used = :effective_depth_used, last_evaluated_at = :last_evaluated_at, "
@@ -984,6 +1136,135 @@ class ArcadeKnowledgeStore:
                     seen.add(related_uid)
                     frontier.append((related_uid, depth + 1))
         return results
+
+    async def get_adaptive_session(self, *, session_id: str) -> AdaptiveSessionSnapshot | None:
+        rows = await self._safe_query(
+            (
+                "SELECT session_id, user_id, status, resolved_reference_json, domain_hint, language, "
+                "constraints_json, tutor_context_json, current_block_json, block_history_json, summary_json, "
+                "opened_at, updated_at FROM AdaptiveSession WHERE session_id = :session_id LIMIT 1"
+            ),
+            {"session_id": session_id},
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return AdaptiveSessionSnapshot(
+            session_id=row["session_id"],
+            user_id=row["user_id"],
+            resolved_reference=self._parse_model(
+                row.get("resolved_reference_json"),
+                TutorContextResolvedReference,
+            ),
+            domain_hint=row.get("domain_hint"),
+            language=row.get("language") or "es",
+            constraints=self._parse_model(row.get("constraints_json"), AdaptiveSessionConstraints),
+            tutor_context=self._parse_model(row.get("tutor_context_json"), TutorContextResponse),
+            current_block=(
+                self._parse_model(row.get("current_block_json"), AdaptiveBlockResponse)
+                if row.get("current_block_json")
+                else None
+            ),
+            block_history=self._parse_model_list(row.get("block_history_json"), AdaptiveBlockResult),
+            summary=self._parse_model(row.get("summary_json"), AdaptiveSessionSummary),
+            status=row.get("status") or "active",
+            opened_at=row.get("opened_at") or utcnow_iso(),
+            updated_at=row.get("updated_at") or utcnow_iso(),
+        )
+
+    async def upsert_adaptive_session(self, session: AdaptiveSessionSnapshot) -> None:
+        payload = {
+            "session_id": session.session_id,
+            "user_id": session.user_id,
+            "status": session.status,
+            "resolved_reference_json": session.resolved_reference.model_dump_json(),
+            "domain_hint": session.domain_hint,
+            "language": session.language,
+            "constraints_json": session.constraints.model_dump_json(),
+            "tutor_context_json": session.tutor_context.model_dump_json(),
+            "current_block_json": session.current_block.model_dump_json() if session.current_block else None,
+            "block_history_json": json.dumps([item.model_dump() for item in session.block_history]),
+            "summary_json": session.summary.model_dump_json(),
+            "opened_at": session.opened_at,
+            "updated_at": session.updated_at,
+        }
+        rows = await self._safe_query(
+            "SELECT session_id FROM AdaptiveSession WHERE session_id = :session_id LIMIT 1",
+            {"session_id": session.session_id},
+        )
+        if rows:
+            await self.client.command(
+                (
+                    "UPDATE AdaptiveSession SET user_id = :user_id, status = :status, "
+                    "resolved_reference_json = :resolved_reference_json, domain_hint = :domain_hint, "
+                    "language = :language, constraints_json = :constraints_json, "
+                    "tutor_context_json = :tutor_context_json, current_block_json = :current_block_json, "
+                    "block_history_json = :block_history_json, summary_json = :summary_json, "
+                    "opened_at = :opened_at, updated_at = :updated_at "
+                    "WHERE session_id = :session_id"
+                ),
+                payload,
+            )
+            return
+        await self.client.command(
+            (
+                "INSERT INTO AdaptiveSession SET session_id = :session_id, user_id = :user_id, status = :status, "
+                "resolved_reference_json = :resolved_reference_json, domain_hint = :domain_hint, "
+                "language = :language, constraints_json = :constraints_json, "
+                "tutor_context_json = :tutor_context_json, current_block_json = :current_block_json, "
+                "block_history_json = :block_history_json, summary_json = :summary_json, "
+                "opened_at = :opened_at, updated_at = :updated_at"
+            ),
+            payload,
+        )
+
+    async def append_adaptive_block_attempt(
+        self,
+        *,
+        session_id: str,
+        block: AdaptiveBlockResponse,
+        answer_keys: list[AdaptiveBlockAnswerKey],
+        submissions: list[AdaptiveItemSubmission],
+        interaction_events: list[AdaptiveInteractionEvent],
+        block_result: AdaptiveBlockResult | None,
+    ) -> None:
+        payload = {
+            "session_id": session_id,
+            "block_id": block.block_id,
+            "plan_json": block.plan.model_dump_json(),
+            "items_json": json.dumps([item.model_dump() for item in block.items]),
+            "answer_keys_json": json.dumps([item.model_dump() for item in answer_keys]),
+            "submissions_json": json.dumps([item.model_dump() for item in submissions]),
+            "interaction_events_json": json.dumps([item.model_dump() for item in interaction_events]),
+            "block_result_json": block_result.model_dump_json() if block_result else None,
+            "created_at": block.generated_at,
+            "updated_at": utcnow_iso(),
+        }
+        rows = await self._safe_query(
+            "SELECT block_id FROM AdaptiveBlockAttempt WHERE block_id = :block_id LIMIT 1",
+            {"block_id": block.block_id},
+        )
+        if rows:
+            await self.client.command(
+                (
+                    "UPDATE AdaptiveBlockAttempt SET session_id = :session_id, plan_json = :plan_json, "
+                    "items_json = :items_json, answer_keys_json = :answer_keys_json, "
+                    "submissions_json = :submissions_json, interaction_events_json = :interaction_events_json, "
+                    "block_result_json = :block_result_json, created_at = :created_at, updated_at = :updated_at "
+                    "WHERE block_id = :block_id"
+                ),
+                payload,
+            )
+            return
+        await self.client.command(
+            (
+                "INSERT INTO AdaptiveBlockAttempt SET session_id = :session_id, block_id = :block_id, "
+                "plan_json = :plan_json, items_json = :items_json, answer_keys_json = :answer_keys_json, "
+                "submissions_json = :submissions_json, interaction_events_json = :interaction_events_json, "
+                "block_result_json = :block_result_json, created_at = :created_at, updated_at = :updated_at"
+            ),
+            payload,
+        )
 
     async def _build_tutor_relations(
         self,
@@ -1321,22 +1602,23 @@ class ArcadeKnowledgeStore:
 
     @staticmethod
     def _parse_model(raw: object, model: Any) -> Any:
+        def _empty_model() -> Any:
+            try:
+                return model.model_validate({})
+            except Exception:
+                return model(
+                    recent_average=0.0,
+                    trend="insufficient_data",
+                    deviation=0.0,
+                    last_evaluated_at=None,
+                )
+
         if not raw:
-            return model(
-                recent_average=0.0,
-                trend="insufficient_data",
-                deviation=0.0,
-                last_evaluated_at=None,
-            )
+            return _empty_model()
         try:
             return model.model_validate_json(str(raw))
         except Exception:
-            return model(
-                recent_average=0.0,
-                trend="insufficient_data",
-                deviation=0.0,
-                last_evaluated_at=None,
-            )
+            return _empty_model()
 
     @staticmethod
     def _parse_model_list(raw: object, model: Any) -> list[Any]:
@@ -1387,6 +1669,8 @@ class InMemoryKnowledgeStore:
         self.user_concept_mastery: dict[tuple[str, str], PedagogicalConceptState] = {}
         self.user_domain_mastery: dict[tuple[str, str], PedagogicalDomainState] = {}
         self.user_evaluation_events: dict[str, list[PedagogicalEvaluationEvent]] = {}
+        self.adaptive_sessions: dict[str, AdaptiveSessionSnapshot] = {}
+        self.adaptive_block_attempts: dict[str, dict[str, Any]] = {}
 
     async def bootstrap_schema(self) -> None:
         return None
@@ -1446,6 +1730,24 @@ class InMemoryKnowledgeStore:
         self.episodes[episode_id] = updated
         return updated
 
+    async def create_concept(
+        self,
+        payload: CreateConceptRequest,
+        *,
+        embedding: list[float],
+        source_confidence: float,
+    ) -> ConceptRecord:
+        normalized_name = normalize_text(payload.canonical_name)
+        self._assert_concept_identity_available(
+            normalized_name=normalized_name,
+            aliases=payload.aliases,
+        )
+        return self._create_concept_record(
+            payload=payload,
+            normalized_name=normalized_name,
+            embedding=embedding,
+        )
+
     async def upsert_concept(
         self,
         payload: UpsertConceptRequest,
@@ -1453,39 +1755,43 @@ class InMemoryKnowledgeStore:
         embedding: list[float],
         source_confidence: float,
     ) -> tuple[ConceptRecord, bool]:
-        existing = await self.get_concept(payload.canonical_name)
+        normalized_name = normalize_text(payload.canonical_name)
+        existing = self._get_concept_for_upsert(uid=payload.uid, normalized_name=normalized_name)
+        if payload.uid and not existing:
+            raise ConceptUpsertTargetNotFoundError(f"concept not found for uid: {payload.uid}")
         now = utcnow_iso()
         if existing:
+            aliases = _merge_alias_lists(existing.aliases, payload.aliases)
+            self._assert_concept_identity_available(
+                normalized_name=normalized_name,
+                aliases=aliases,
+                exclude_uid=existing.uid,
+            )
             updated = existing.model_copy(
                 update={
                     "canonical_name": payload.canonical_name,
+                    "normalized_name": normalized_name,
                     "domain": payload.domain,
                     "description": payload.description or existing.description,
-                    "aliases": _merge_alias_lists(existing.aliases, payload.aliases),
+                    "aliases": aliases,
                     "embedding": embedding,
                     "updated_at": now,
                 }
             )
             self.concepts[updated.uid] = updated
-            for alias in updated.aliases:
-                self.aliases[normalize_text(alias)] = updated.uid
+            self._replace_alias_index(updated.uid, previous_aliases=existing.aliases, next_aliases=updated.aliases)
             return updated, False
 
-        uid = make_prefixed_id("cn")
-        concept = ConceptRecord(
-            uid=uid,
-            canonical_name=payload.canonical_name,
-            normalized_name=normalize_text(payload.canonical_name),
-            domain=payload.domain,
-            description=payload.description,
+        self._assert_concept_identity_available(
+            normalized_name=normalized_name,
             aliases=payload.aliases,
-            embedding=embedding,
-            created_at=now,
-            updated_at=now,
         )
-        self.concepts[uid] = concept
-        for alias in payload.aliases:
-            self.aliases[normalize_text(alias)] = uid
+        concept = self._create_concept_record(
+            payload=payload,
+            normalized_name=normalized_name,
+            now=now,
+            embedding=embedding,
+        )
         return concept, True
 
     async def get_concept(self, ref: str) -> ConceptRecord | None:
@@ -1497,6 +1803,71 @@ class InMemoryKnowledgeStore:
         if alias_uid:
             return self.concepts.get(alias_uid)
         return None
+
+    def _get_concept_for_upsert(self, *, uid: str | None, normalized_name: str) -> ConceptRecord | None:
+        if uid:
+            return self.concepts.get(uid)
+        for concept in self.concepts.values():
+            if concept.normalized_name == normalized_name:
+                return concept
+        return None
+
+    def _create_concept_record(
+        self,
+        *,
+        payload: CreateConceptRequest | UpsertConceptRequest,
+        normalized_name: str,
+        now: str | None = None,
+        embedding: list[float] | None = None,
+    ) -> ConceptRecord:
+        created_at = now or utcnow_iso()
+        uid = make_prefixed_id("cn")
+        concept = ConceptRecord(
+            uid=uid,
+            canonical_name=payload.canonical_name,
+            normalized_name=normalized_name,
+            domain=payload.domain,
+            description=payload.description,
+            aliases=payload.aliases,
+            embedding=embedding or [],
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        self.concepts[uid] = concept
+        self._replace_alias_index(uid, previous_aliases=[], next_aliases=payload.aliases)
+        return concept
+
+    def _replace_alias_index(self, uid: str, *, previous_aliases: list[str], next_aliases: list[str]) -> None:
+        for alias in previous_aliases:
+            key = normalize_text(alias)
+            if self.aliases.get(key) == uid:
+                self.aliases.pop(key, None)
+        for alias in next_aliases:
+            key = normalize_text(alias)
+            if key:
+                self.aliases[key] = uid
+
+    def _assert_concept_identity_available(
+        self,
+        *,
+        normalized_name: str,
+        aliases: list[str],
+        exclude_uid: str | None = None,
+    ) -> None:
+        desired_tokens = {normalized_name, *(normalize_text(alias) for alias in aliases)}
+        desired_tokens.discard("")
+        if not desired_tokens:
+            return
+        for concept in self.concepts.values():
+            if exclude_uid and concept.uid == exclude_uid:
+                continue
+            existing_tokens = {concept.normalized_name, *(normalize_text(alias) for alias in concept.aliases)}
+            existing_tokens.discard("")
+            overlap = sorted(desired_tokens.intersection(existing_tokens))
+            if overlap:
+                raise ConceptConflictError(
+                    f"concept identity already used by {concept.canonical_name} ({concept.uid}): {', '.join(overlap)}"
+                )
 
     async def search_candidates(
         self,
@@ -1851,6 +2222,31 @@ class InMemoryKnowledgeStore:
                     seen.add(related_uid)
                     frontier.append((related_uid, depth + 1))
         return results
+
+    async def get_adaptive_session(self, *, session_id: str) -> AdaptiveSessionSnapshot | None:
+        return self.adaptive_sessions.get(session_id)
+
+    async def upsert_adaptive_session(self, session: AdaptiveSessionSnapshot) -> None:
+        self.adaptive_sessions[session.session_id] = session
+
+    async def append_adaptive_block_attempt(
+        self,
+        *,
+        session_id: str,
+        block: AdaptiveBlockResponse,
+        answer_keys: list[AdaptiveBlockAnswerKey],
+        submissions: list[AdaptiveItemSubmission],
+        interaction_events: list[AdaptiveInteractionEvent],
+        block_result: AdaptiveBlockResult | None,
+    ) -> None:
+        self.adaptive_block_attempts[block.block_id] = {
+            "session_id": session_id,
+            "block": block,
+            "answer_keys": answer_keys,
+            "submissions": submissions,
+            "interaction_events": interaction_events,
+            "block_result": block_result,
+        }
 
 
 def _merge_alias_lists(existing: list[str], incoming: list[str]) -> list[str]:

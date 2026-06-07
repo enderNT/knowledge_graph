@@ -63,9 +63,19 @@ class MCPBackendProtocol(Protocol):
         include_evidence: bool = True,
     ) -> dict[str, Any]: ...
 
+    async def create_concept(
+        self,
+        *,
+        canonical_name: str,
+        aliases: list[str] | None = None,
+        domain: str,
+        description: str = "",
+    ) -> dict[str, Any]: ...
+
     async def upsert_concept(
         self,
         *,
+        uid: str | None = None,
         canonical_name: str,
         aliases: list[str] | None = None,
         domain: str,
@@ -108,6 +118,29 @@ class MCPBackendProtocol(Protocol):
         concept_uids: list[str] | None = None,
         query: str | None = None,
     ) -> dict[str, Any]: ...
+
+    async def start_adaptive_session(
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        domain_hint: str | None = None,
+        language: str = "es",
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def submit_adaptive_block(
+        self,
+        *,
+        session_id: str,
+        block_id: str,
+        submissions: list[dict[str, Any]],
+        interaction_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def get_adaptive_session(self, *, session_id: str) -> dict[str, Any]: ...
 
     async def check_ready(self) -> tuple[bool, dict[str, Any]]: ...
 
@@ -210,16 +243,36 @@ def create_mcp_server(
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 
+    @mcp.tool(name="create_concept")
+    async def create_concept(
+        canonical_name: Annotated[str, Field(min_length=1)],
+        domain: Annotated[str, Field(min_length=1)],
+        aliases: list[str] | None = None,
+        description: str = "",
+    ) -> dict[str, Any]:
+        """Create a concept strictly and fail on name or alias collisions."""
+        try:
+            return await backend.create_concept(
+                canonical_name=canonical_name,
+                aliases=aliases,
+                domain=domain,
+                description=description,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
     @mcp.tool(name="upsert_concept")
     async def upsert_concept(
         canonical_name: Annotated[str, Field(min_length=1)],
         domain: Annotated[str, Field(min_length=1)],
         aliases: list[str] | None = None,
         description: str = "",
+        uid: str | None = None,
     ) -> dict[str, Any]:
-        """Create or update a concept in the knowledge graph."""
+        """Create or update a concept by exact uid or normalized canonical name."""
         try:
             return await backend.upsert_concept(
+                uid=uid,
                 canonical_name=canonical_name,
                 aliases=aliases,
                 domain=domain,
@@ -306,6 +359,58 @@ def create_mcp_server(
                 concept_uids=concept_uids,
                 query=query,
             )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="start_adaptive_session")
+    async def start_adaptive_session(
+        user_id: Annotated[str, Field(min_length=1)],
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        domain_hint: str | None = None,
+        language: str = "es",
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start an adaptive pedagogical session grounded on strict tutor context."""
+        try:
+            return await backend.start_adaptive_session(
+                user_id=user_id,
+                query=query,
+                episode_id=episode_id,
+                job_id=job_id,
+                domain_hint=domain_hint,
+                language=language,
+                constraints=constraints,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="submit_adaptive_block")
+    async def submit_adaptive_block(
+        session_id: Annotated[str, Field(min_length=1)],
+        block_id: Annotated[str, Field(min_length=1)],
+        submissions: list[dict[str, Any]],
+        interaction_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Submit learner responses for the current adaptive block and replan."""
+        try:
+            return await backend.submit_adaptive_block(
+                session_id=session_id,
+                block_id=block_id,
+                submissions=submissions,
+                interaction_events=interaction_events,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="get_adaptive_session")
+    async def get_adaptive_session(
+        session_id: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        """Fetch the persisted adaptive session snapshot."""
+        try:
+            return await backend.get_adaptive_session(session_id=session_id)
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 

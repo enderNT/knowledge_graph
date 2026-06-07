@@ -32,7 +32,7 @@ def _response(request: httpx.Request, status_code: int, payload: dict) -> httpx.
     return httpx.Response(status_code=status_code, json=payload, request=request)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_ingestion_returns_completed_job_result():
     calls = {"jobs": 0}
 
@@ -69,7 +69,7 @@ async def test_ingestion_returns_completed_job_result():
     }
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_ingestion_returns_failed_status_without_raising():
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/knowledge/fragments":
@@ -96,7 +96,7 @@ async def test_ingestion_returns_failed_status_without_raising():
     }
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_ingestion_timeout_returns_processing_status():
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/knowledge/fragments":
@@ -114,7 +114,7 @@ async def test_ingestion_timeout_returns_processing_status():
     assert result == {"status": "processing", "episode_id": "ep_1", "job_id": "job_1"}
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("status_code", "error_type"),
     [
@@ -137,7 +137,7 @@ async def test_backend_error_translation(status_code: int, error_type: type[Exce
     assert str(exc_info.value) == f"error-{status_code}"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_learning_context_request_and_response_shape():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/search/learning-context"
@@ -190,7 +190,63 @@ async def test_learning_context_request_and_response_shape():
     assert result["debug"]["candidate_count"] == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
+async def test_create_concept_request_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/concepts"
+        assert json.loads(request.content.decode()) == {
+            "canonical_name": "Sistema Binario",
+            "aliases": ["sistema binario"],
+            "domain": "Programacion Cobol",
+            "description": "Base 2.",
+        }
+        return _response(request, 200, {"concept": {"uid": "cn_1"}, "created": True})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.create_concept(
+            canonical_name="Sistema Binario",
+            aliases=["sistema binario"],
+            domain="Programacion Cobol",
+            description="Base 2.",
+        )
+    finally:
+        await client.close()
+
+    assert result["concept"]["uid"] == "cn_1"
+
+
+@pytest.mark.anyio
+async def test_upsert_concept_sends_optional_uid():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PUT"
+        assert request.url.path == "/v1/concepts/upsert"
+        assert json.loads(request.content.decode()) == {
+            "uid": "cn_existing",
+            "canonical_name": "Sistema Binario",
+            "aliases": ["sistema binario"],
+            "domain": "Programacion Cobol",
+            "description": "Base 2.",
+        }
+        return _response(request, 200, {"concept": {"uid": "cn_existing"}, "created": False})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.upsert_concept(
+            uid="cn_existing",
+            canonical_name="Sistema Binario",
+            aliases=["sistema binario"],
+            domain="Programacion Cobol",
+            description="Base 2.",
+        )
+    finally:
+        await client.close()
+
+    assert result["created"] is False
+
+
+@pytest.mark.anyio
 async def test_tutor_context_request_and_response_shape():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/search/tutor-context"

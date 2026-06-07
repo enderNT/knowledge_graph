@@ -34,6 +34,14 @@ class AddKnowledgeFragmentAccepted(BaseModel):
 
 
 class UpsertConceptRequest(BaseModel):
+    uid: str | None = None
+    canonical_name: str = Field(min_length=1)
+    aliases: list[str] = Field(default_factory=list)
+    domain: str = Field(min_length=1)
+    description: str = ""
+
+
+class CreateConceptRequest(BaseModel):
     canonical_name: str = Field(min_length=1)
     aliases: list[str] = Field(default_factory=list)
     domain: str = Field(min_length=1)
@@ -213,11 +221,58 @@ class TutorContextResponse(BaseModel):
     failure_reason: str | None = None
 
 
+PedagogicalDimension = Literal["recognition", "recall", "explanation", "application"]
+AdaptiveQuestionType = Literal[
+    "multiple_choice_single",
+    "multiple_choice_multi",
+    "true_false",
+    "cloze",
+    "open",
+]
+AdaptiveDifficulty = Literal["introductory", "intermediate", "advanced"]
+AdaptiveBlockGoal = Literal[
+    "diagnose_uncertain",
+    "reinforce_weak",
+    "confirm_improvement",
+    "test_depth",
+    "close_concept",
+]
+AdaptiveVerdict = Literal["correct", "partial_high", "partial_low", "incorrect", "unsupported"]
 PedagogicalMasteryLabel = Literal["muy bajo", "bajo", "medio", "alto", "muy alto"]
 PedagogicalTrendLabel = Literal["improving", "stable", "declining", "insufficient_data"]
 PedagogicalStatus = Literal["ok", "sparse", "not_found"]
 
 PEDAGOGICAL_RELATIONS = {"PREREQUISITE_FOR", "PART_OF", "IS_A"}
+
+
+class PedagogicalDimensionState(BaseModel):
+    score_0_to_100: float = Field(default=50.0, ge=0.0, le=100.0)
+    last_evaluated_at: str | None = None
+
+
+class PedagogicalDimensionStates(BaseModel):
+    recognition: PedagogicalDimensionState = Field(default_factory=PedagogicalDimensionState)
+    recall: PedagogicalDimensionState = Field(default_factory=PedagogicalDimensionState)
+    explanation: PedagogicalDimensionState = Field(default_factory=PedagogicalDimensionState)
+    application: PedagogicalDimensionState = Field(default_factory=PedagogicalDimensionState)
+
+    def weakest_dimension(self) -> tuple[PedagogicalDimension, PedagogicalDimensionState]:
+        pairs: list[tuple[PedagogicalDimension, PedagogicalDimensionState]] = [
+            ("recognition", self.recognition),
+            ("recall", self.recall),
+            ("explanation", self.explanation),
+            ("application", self.application),
+        ]
+        return min(pairs, key=lambda item: item[1].score_0_to_100)
+
+    def average_score(self) -> float:
+        values = [
+            self.recognition.score_0_to_100,
+            self.recall.score_0_to_100,
+            self.explanation.score_0_to_100,
+            self.application.score_0_to_100,
+        ]
+        return round(sum(values) / len(values), 2)
 
 
 class PedagogicalRecentStats(BaseModel):
@@ -252,6 +307,11 @@ class PedagogicalConceptState(BaseModel):
     domain: str = Field(min_length=1)
     mastery_score_0_to_100: float = Field(ge=0.0, le=100.0)
     mastery_label: PedagogicalMasteryLabel
+    dimensions: PedagogicalDimensionStates = Field(default_factory=PedagogicalDimensionStates)
+    confidence_0_to_1: float = Field(default=0.25, ge=0.0, le=1.0)
+    trend: PedagogicalTrendLabel = "insufficient_data"
+    priority_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    last_block_id: str | None = None
     recent_history: list[PedagogicalEvaluationEvent] = Field(default_factory=list, max_length=5)
     recent_stats: PedagogicalRecentStats
     weaknesses: list[str] = Field(default_factory=list)
@@ -346,6 +406,193 @@ class UpdatePedagogicalContextResponse(BaseModel):
     context: PedagogicalContextSnapshot
     session_view: PedagogicalSessionView
     warnings: list[str] = Field(default_factory=list)
+
+
+class AdaptiveSessionConstraints(BaseModel):
+    max_items_per_block: int = Field(default=3, ge=2, le=4)
+    max_blocks: int = Field(default=4, ge=1, le=12)
+    allowed_question_types: list[AdaptiveQuestionType] = Field(
+        default_factory=lambda: [
+            "multiple_choice_single",
+            "multiple_choice_multi",
+            "true_false",
+            "cloze",
+            "open",
+        ]
+    )
+    preferred_max_difficulty: AdaptiveDifficulty | None = None
+    allow_scaffolding: bool = True
+
+
+class AdaptiveScaffoldingPolicy(BaseModel):
+    allow_hint_after_error: bool = False
+    allow_rephrase_retry: bool = False
+    allow_difficulty_drop_next_item: bool = False
+    show_corrective_explanation_at_end: bool = True
+
+
+class AdaptiveSuccessCriteria(BaseModel):
+    min_block_score: float = Field(default=0.7, ge=0.0, le=1.0)
+    min_dimension_signal: float = Field(default=0.65, ge=0.0, le=1.0)
+    max_supported_answers_ratio: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class AdaptiveNextStepPolicy(BaseModel):
+    on_success: str
+    on_partial_high: str
+    on_partial_low: str
+    on_failure: str
+
+
+class AdaptiveBlockPlan(BaseModel):
+    block_id: str
+    block_goal: AdaptiveBlockGoal
+    target_concept_uid: str
+    target_concept_name: str
+    target_dimensions: list[PedagogicalDimension] = Field(min_length=1, max_length=2)
+    recommended_question_types: list[AdaptiveQuestionType] = Field(min_length=1, max_length=3)
+    difficulty: AdaptiveDifficulty
+    scaffolding: AdaptiveScaffoldingPolicy
+    success_criteria: AdaptiveSuccessCriteria
+    next_step_policy: AdaptiveNextStepPolicy
+    planner_explanation: str
+
+
+class AdaptiveBlockItem(BaseModel):
+    item_id: str
+    question_type: AdaptiveQuestionType
+    concept_uid: str
+    target_dimension: PedagogicalDimension
+    difficulty: AdaptiveDifficulty
+    prompt: str
+    choices: list[str] = Field(default_factory=list)
+    rubric: dict[str, Any] = Field(default_factory=dict)
+    grounding_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdaptiveBlockAnswerKey(BaseModel):
+    item_id: str
+    grading_mode: str
+    expected: list[str] = Field(default_factory=list)
+    correct_choice_indexes: list[int] = Field(default_factory=list)
+    boolean_answer: bool | None = None
+    rationale: str = ""
+
+
+class AdaptiveBlockResponse(BaseModel):
+    block_id: str
+    plan: AdaptiveBlockPlan
+    items: list[AdaptiveBlockItem] = Field(default_factory=list)
+    answer_keys: list[AdaptiveBlockAnswerKey] = Field(default_factory=list)
+    generated_at: str
+
+
+class AdaptiveInteractionEvent(BaseModel):
+    item_id: str = Field(min_length=1)
+    hint_used: bool = False
+    retry_used: bool = False
+    difficulty_drop_applied: bool = False
+
+
+class AdaptiveItemSubmission(BaseModel):
+    item_id: str = Field(min_length=1)
+    response_text: str | None = None
+    selected_choices: list[int] = Field(default_factory=list)
+    boolean_answer: bool | None = None
+
+
+class AdaptiveItemResult(BaseModel):
+    item_id: str
+    verdict: AdaptiveVerdict
+    score_0_to_1: float = Field(ge=0.0, le=1.0)
+    target_dimension: PedagogicalDimension
+    used_hint: bool = False
+    used_retry: bool = False
+    feedback: str
+    signals: dict[str, float] = Field(default_factory=dict)
+
+
+class AdaptiveBlockResult(BaseModel):
+    block_id: str
+    item_results: list[AdaptiveItemResult] = Field(default_factory=list)
+    dimension_summary: dict[PedagogicalDimension, float] = Field(default_factory=dict)
+    block_verdict: AdaptiveVerdict
+    block_score: float = Field(ge=0.0, le=1.0)
+    recommended_next_action: str
+    corrective_explanation: str = ""
+    transition_explanation: str = ""
+
+
+class AdaptiveSessionSummary(BaseModel):
+    total_blocks: int = 0
+    completed_blocks: int = 0
+    latest_block_verdict: AdaptiveVerdict | None = None
+    session_closed: bool = False
+    closure_reason: str | None = None
+
+
+class AdaptiveSessionSnapshot(BaseModel):
+    session_id: str
+    user_id: str
+    resolved_reference: TutorContextResolvedReference
+    domain_hint: str | None = None
+    language: str = "es"
+    constraints: AdaptiveSessionConstraints = Field(default_factory=AdaptiveSessionConstraints)
+    tutor_context: TutorContextResponse
+    current_block: AdaptiveBlockResponse | None = None
+    block_history: list[AdaptiveBlockResult] = Field(default_factory=list)
+    summary: AdaptiveSessionSummary = Field(default_factory=AdaptiveSessionSummary)
+    status: Literal["active", "closed"] = "active"
+    opened_at: str
+    updated_at: str
+
+
+class AdaptiveSessionStartRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    query: str | None = Field(default=None, min_length=1)
+    episode_id: str | None = Field(default=None, min_length=1)
+    job_id: str | None = Field(default=None, min_length=1)
+    domain_hint: str | None = None
+    language: str = "es"
+    constraints: AdaptiveSessionConstraints = Field(default_factory=AdaptiveSessionConstraints)
+
+    @model_validator(mode="after")
+    def validate_single_reference(self) -> "AdaptiveSessionStartRequest":
+        provided = [
+            name
+            for name, value in (
+                ("query", self.query),
+                ("episode_id", self.episode_id),
+                ("job_id", self.job_id),
+            )
+            if value
+        ]
+        if len(provided) != 1:
+            raise ValueError("exactly one of query, episode_id or job_id must be provided")
+        return self
+
+
+class AdaptiveSessionStartResponse(BaseModel):
+    session: AdaptiveSessionSnapshot
+    current_block: AdaptiveBlockResponse
+    planner_explanation: str
+    grounding_status: Literal["ok"]
+
+
+class AdaptiveBlockSubmissionRequest(BaseModel):
+    block_id: str = Field(min_length=1)
+    submissions: list[AdaptiveItemSubmission] = Field(min_length=1)
+    interaction_events: list[AdaptiveInteractionEvent] = Field(default_factory=list)
+
+
+class AdaptiveBlockSubmissionResponse(BaseModel):
+    session: AdaptiveSessionSnapshot
+    block_result: AdaptiveBlockResult
+    updated_context: PedagogicalContextSnapshot
+    next_action: str
+    next_block: AdaptiveBlockResponse | None = None
+    session_closed: bool = False
 
 
 class AgentToolDebug(BaseModel):

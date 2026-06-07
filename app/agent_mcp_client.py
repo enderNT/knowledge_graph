@@ -46,6 +46,7 @@ class AgentMCPUpstreamClient:
         names = sorted(tool.name for tool in tools.tools)
         expected = {
             "add_knowledge_fragment",
+            "create_concept",
             "search_candidates",
             "get_learning_context",
             "get_tutor_context",
@@ -55,6 +56,9 @@ class AgentMCPUpstreamClient:
             "get_pedagogical_context",
             "update_pedagogical_context",
             "get_pedagogical_session_view",
+            "start_adaptive_session",
+            "submit_adaptive_block",
+            "get_adaptive_session",
         }
         missing = sorted(expected.difference(names))
         if missing:
@@ -166,7 +170,7 @@ class AgentMCPUpstreamClient:
             },
         )
 
-    async def upsert_concept(
+    async def create_concept(
         self,
         *,
         canonical_name: str,
@@ -175,8 +179,28 @@ class AgentMCPUpstreamClient:
         description: str = "",
     ) -> dict[str, Any]:
         return await self.call_tool(
+            "create_concept",
+            {
+                "canonical_name": canonical_name,
+                "aliases": aliases or [],
+                "domain": domain,
+                "description": description,
+            },
+        )
+
+    async def upsert_concept(
+        self,
+        *,
+        uid: str | None = None,
+        canonical_name: str,
+        aliases: list[str] | None = None,
+        domain: str,
+        description: str = "",
+    ) -> dict[str, Any]:
+        return await self.call_tool(
             "upsert_concept",
             {
+                "uid": uid,
                 "canonical_name": canonical_name,
                 "aliases": aliases or [],
                 "domain": domain,
@@ -255,6 +279,51 @@ class AgentMCPUpstreamClient:
                 "query": query,
             },
         )
+
+    async def start_adaptive_session(
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        domain_hint: str | None = None,
+        language: str = "es",
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "start_adaptive_session",
+            {
+                "user_id": user_id,
+                "query": query,
+                "episode_id": episode_id,
+                "job_id": job_id,
+                "domain_hint": domain_hint,
+                "language": language,
+                "constraints": constraints or {},
+            },
+        )
+
+    async def submit_adaptive_block(
+        self,
+        *,
+        session_id: str,
+        block_id: str,
+        submissions: list[dict[str, Any]],
+        interaction_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "submit_adaptive_block",
+            {
+                "session_id": session_id,
+                "block_id": block_id,
+                "submissions": submissions,
+                "interaction_events": interaction_events or [],
+            },
+        )
+
+    async def get_adaptive_session(self, *, session_id: str) -> dict[str, Any]:
+        return await self.call_tool("get_adaptive_session", {"session_id": session_id})
 
     @asynccontextmanager
     async def _session(self):

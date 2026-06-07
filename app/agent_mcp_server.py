@@ -62,9 +62,19 @@ class AgentUpstreamProtocol(Protocol):
         include_evidence: bool = True,
     ) -> dict[str, Any]: ...
 
+    async def create_concept(
+        self,
+        *,
+        canonical_name: str,
+        aliases: list[str] | None = None,
+        domain: str,
+        description: str = "",
+    ) -> dict[str, Any]: ...
+
     async def upsert_concept(
         self,
         *,
+        uid: str | None = None,
         canonical_name: str,
         aliases: list[str] | None = None,
         domain: str,
@@ -107,6 +117,29 @@ class AgentUpstreamProtocol(Protocol):
         concept_uids: list[str] | None = None,
         query: str | None = None,
     ) -> dict[str, Any]: ...
+
+    async def start_adaptive_session(
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        domain_hint: str | None = None,
+        language: str = "es",
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def submit_adaptive_block(
+        self,
+        *,
+        session_id: str,
+        block_id: str,
+        submissions: list[dict[str, Any]],
+        interaction_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def get_adaptive_session(self, *, session_id: str) -> dict[str, Any]: ...
 
 
 class AgentContentProtocol(Protocol):
@@ -281,9 +314,28 @@ def create_agent_mcp_server(
         domain: Annotated[str, Field(min_length=1)],
         aliases: list[str] | None = None,
         description: str = "",
+        uid: str | None = None,
     ) -> dict[str, Any]:
         try:
             return await upstream.upsert_concept(
+                uid=uid,
+                canonical_name=canonical_name,
+                aliases=aliases,
+                domain=domain,
+                description=description,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_create_concept")
+    async def kg_create_concept(
+        canonical_name: Annotated[str, Field(min_length=1)],
+        domain: Annotated[str, Field(min_length=1)],
+        aliases: list[str] | None = None,
+        description: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.create_concept(
                 canonical_name=canonical_name,
                 aliases=aliases,
                 domain=domain,
@@ -365,6 +417,55 @@ def create_agent_mcp_server(
                 concept_uids=concept_uids,
                 query=query,
             )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="start_adaptive_session")
+    async def start_adaptive_session(
+        user_id: Annotated[str, Field(min_length=1)],
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        domain_hint: str | None = None,
+        language: str = "es",
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.start_adaptive_session(
+                user_id=user_id,
+                query=query,
+                episode_id=episode_id,
+                job_id=job_id,
+                domain_hint=domain_hint,
+                language=language,
+                constraints=constraints,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="submit_adaptive_block")
+    async def submit_adaptive_block(
+        session_id: Annotated[str, Field(min_length=1)],
+        block_id: Annotated[str, Field(min_length=1)],
+        submissions: list[dict[str, Any]],
+        interaction_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.submit_adaptive_block(
+                session_id=session_id,
+                block_id=block_id,
+                submissions=submissions,
+                interaction_events=interaction_events,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="get_adaptive_session")
+    async def get_adaptive_session(
+        session_id: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.get_adaptive_session(session_id=session_id)
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 

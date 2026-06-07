@@ -188,6 +188,9 @@ class FakeKnowledgeBackendClient:
             "failure_reason": None,
         }
 
+    async def create_concept(self, **_: Any) -> dict[str, Any]:
+        return {"concept": {"uid": "cn_strict"}, "created": True}
+
     async def upsert_concept(self, **_: Any) -> dict[str, Any]:
         return {"concept": {"uid": "cn_new"}, "created": True}
 
@@ -273,6 +276,134 @@ class FakeKnowledgeBackendClient:
             "warnings": [],
         }
 
+    async def start_adaptive_session(self, **kwargs: Any) -> dict[str, Any]:
+        tutor_context = await self.get_tutor_context(
+            query=kwargs.get("query"),
+            episode_id=kwargs.get("episode_id"),
+            job_id=kwargs.get("job_id"),
+        )
+        block = {
+            "block_id": "blk_1",
+            "plan": {
+                "block_id": "blk_1",
+                "block_goal": "reinforce_weak",
+                "target_concept_uid": "cn_1",
+                "target_concept_name": "Condicionamiento clásico",
+                "target_dimensions": ["recognition"],
+                "recommended_question_types": ["multiple_choice_single", "true_false"],
+                "difficulty": "intermediate",
+                "scaffolding": {
+                    "allow_hint_after_error": True,
+                    "allow_rephrase_retry": True,
+                    "allow_difficulty_drop_next_item": False,
+                    "show_corrective_explanation_at_end": True,
+                },
+                "success_criteria": {
+                    "min_block_score": 0.7,
+                    "min_dimension_signal": 0.65,
+                    "max_supported_answers_ratio": 0.5,
+                },
+                "next_step_policy": {
+                    "on_success": "shift_dimension_within_concept_then_reprioritize",
+                    "on_partial_high": "stay_local_with_light_support",
+                    "on_partial_low": "decrease_difficulty_and_return_to_basic_dimension",
+                    "on_failure": "decrease_difficulty_and_move_to_related_or_prerequisite",
+                },
+                "planner_explanation": "priorizar reconocimiento",
+            },
+            "items": [],
+            "answer_keys": [],
+            "generated_at": "2026-06-06T10:00:00+00:00",
+        }
+        return {
+            "session": {
+                "session_id": "ads_1",
+                "user_id": kwargs["user_id"],
+                "resolved_reference": tutor_context["resolved_reference"],
+                "domain_hint": kwargs.get("domain_hint"),
+                "language": kwargs.get("language", "es"),
+                "constraints": {
+                    "max_items_per_block": 3,
+                    "max_blocks": 4,
+                    "allowed_question_types": ["multiple_choice_single", "multiple_choice_multi", "true_false", "cloze", "open"],
+                    "preferred_max_difficulty": None,
+                    "allow_scaffolding": True,
+                },
+                "tutor_context": tutor_context,
+                "current_block": block,
+                "block_history": [],
+                "summary": {
+                    "total_blocks": 4,
+                    "completed_blocks": 0,
+                    "latest_block_verdict": None,
+                    "session_closed": False,
+                    "closure_reason": None,
+                },
+                "status": "active",
+                "opened_at": "2026-06-06T10:00:00+00:00",
+                "updated_at": "2026-06-06T10:00:00+00:00",
+            },
+            "current_block": block,
+            "planner_explanation": "priorizar reconocimiento",
+            "grounding_status": "ok",
+        }
+
+    async def submit_adaptive_block(self, **_: Any) -> dict[str, Any]:
+        return {
+            "session": {
+                "session_id": "ads_1",
+                "user_id": "user-1",
+                "resolved_reference": {
+                    "input_type": "query",
+                    "input_value": "condicionamiento clásico",
+                    "resolved_concept_uid": "cn_1",
+                    "resolved_concept_name": "Condicionamiento clásico",
+                    "resolved_episode_id": "ep_1",
+                    "resolved_job_id": None,
+                    "resolution_reason": "normalized_name",
+                },
+                "domain_hint": None,
+                "language": "es",
+                "constraints": {
+                    "max_items_per_block": 3,
+                    "max_blocks": 4,
+                    "allowed_question_types": ["multiple_choice_single", "multiple_choice_multi", "true_false", "cloze", "open"],
+                    "preferred_max_difficulty": None,
+                    "allow_scaffolding": True,
+                },
+                "tutor_context": await self.get_tutor_context(query="condicionamiento clásico"),
+                "current_block": None,
+                "block_history": [],
+                "summary": {
+                    "total_blocks": 4,
+                    "completed_blocks": 1,
+                    "latest_block_verdict": "correct",
+                    "session_closed": True,
+                    "closure_reason": "coverage_sufficient",
+                },
+                "status": "closed",
+                "opened_at": "2026-06-06T10:00:00+00:00",
+                "updated_at": "2026-06-06T10:05:00+00:00",
+            },
+            "block_result": {
+                "block_id": "blk_1",
+                "item_results": [],
+                "dimension_summary": {"recognition": 1.0},
+                "block_verdict": "correct",
+                "block_score": 1.0,
+                "recommended_next_action": "shift_dimension_within_concept_then_reprioritize",
+                "corrective_explanation": "explicacion",
+                "transition_explanation": "transicion",
+            },
+            "updated_context": await self.get_pedagogical_context(user_id="user-1"),
+            "next_action": "shift_dimension_within_concept_then_reprioritize",
+            "next_block": None,
+            "session_closed": True,
+        }
+
+    async def get_adaptive_session(self, **_: Any) -> dict[str, Any]:
+        return (await self.start_adaptive_session(user_id="user-1", query="condicionamiento clásico"))["session"]
+
     async def check_ready(self) -> tuple[bool, dict[str, Any]]:
         return self.ready
 
@@ -355,22 +486,26 @@ async def client_session(
 
 
 @pytest.mark.anyio
-async def test_agent_mcp_exposes_exactly_thirteen_tools(client_session):
+async def test_agent_mcp_exposes_exactly_seventeen_tools(client_session):
     tools = await client_session.list_tools()
     assert sorted(tool.name for tool in tools.tools) == [
         "evaluate_answer",
         "explain_topic",
+        "get_adaptive_session",
         "generate_quiz",
         "kg_add_knowledge_fragment",
+        "kg_create_concept",
         "kg_get_learning_context",
+        "kg_get_neighborhood",
         "kg_get_pedagogical_context",
         "kg_get_pedagogical_session_view",
         "kg_get_tutor_context",
-        "kg_get_neighborhood",
         "kg_link_concepts",
         "kg_search_candidates",
         "kg_update_pedagogical_context",
         "kg_upsert_concept",
+        "start_adaptive_session",
+        "submit_adaptive_block",
     ]
 
     tool_map = {tool.name: tool for tool in tools.tools}
@@ -378,7 +513,9 @@ async def test_agent_mcp_exposes_exactly_thirteen_tools(client_session):
     assert tool_map["explain_topic"].inputSchema["properties"]["audience"]["default"] == "intermediate"
     assert tool_map["kg_get_tutor_context"].inputSchema["properties"]["depth"]["default"] == 1
     assert tool_map["kg_get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
+    assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
     assert "from" in tool_map["kg_link_concepts"].inputSchema["properties"]
+    assert tool_map["kg_upsert_concept"].inputSchema["properties"]["uid"]["type"] == "string"
 
 
 @pytest.mark.anyio
@@ -498,6 +635,18 @@ async def test_agent_passthrough_tools_preserve_shape_and_from_alias(
     )
     assert pedagogical_update.structuredContent["session_view"]["effective_depth_used"] == 3
 
+    adaptive_start = await client_session.call_tool(
+        "start_adaptive_session",
+        {"user_id": "user-1", "query": "condicionamiento clásico"},
+    )
+    assert adaptive_start.structuredContent["grounding_status"] == "ok"
+
+    adaptive_submit = await client_session.call_tool(
+        "submit_adaptive_block",
+        {"session_id": "ads_1", "block_id": "blk_1", "submissions": [{"item_id": "blk_1_item_1", "selected_choices": [0]}]},
+    )
+    assert adaptive_submit.structuredContent["session_closed"] is True
+
 
 @pytest.mark.anyio
 async def test_agent_streamable_http_client_works_with_documented_url(
@@ -524,4 +673,4 @@ async def test_agent_streamable_http_client_works_with_documented_url(
                     await session.initialize()
                     tools = await session.list_tools()
 
-    assert len(tools.tools) == 13
+    assert len(tools.tools) == 17

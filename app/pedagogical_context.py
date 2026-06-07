@@ -11,6 +11,8 @@ from app.schemas import (
     GetPedagogicalContextResponse,
     PEDAGOGICAL_RELATIONS,
     PedagogicalConceptState,
+    PedagogicalDimensionState,
+    PedagogicalDimensionStates,
     PedagogicalContextSnapshot,
     PedagogicalDomainState,
     PedagogicalEvaluationEvent,
@@ -160,7 +162,10 @@ class PedagogicalContextBuilder:
             domain=payload.domain_hint,
             concept_uids=set(payload.concept_uids),
         )
-        concepts = sorted(filtered.concepts, key=lambda item: item.mastery_score_0_to_100)
+        concepts = sorted(
+            filtered.concepts,
+            key=lambda item: (-item.priority_score, item.dimensions.weakest_dimension()[1].score_0_to_100, item.mastery_score_0_to_100),
+        )
         weak_items = [
             PedagogicalSessionFocusItem(
                 concept_uid=item.concept_uid,
@@ -168,7 +173,7 @@ class PedagogicalContextBuilder:
                 domain=item.domain,
                 mastery_score_0_to_100=item.mastery_score_0_to_100,
                 mastery_label=item.mastery_label,
-                reason="low_mastery" if item.mastery_score_0_to_100 < 60 else "review",
+                reason="low_dimension_mastery" if item.dimensions.weakest_dimension()[1].score_0_to_100 < 60 else "review",
             )
             for item in concepts[:5]
         ]
@@ -250,6 +255,15 @@ class PedagogicalContextBuilder:
             new_score = self._clamp_score(previous_score + propagation_delta)
             existing_history = previous.recent_history if previous else []
             stats = self._build_recent_stats(existing_history)
+            carried_dimensions = previous.dimensions if previous else PedagogicalDimensionStates()
+            weakest_name, weakest_state = carried_dimensions.weakest_dimension()
+            propagated_dimensions = carried_dimensions.model_copy(
+                update={
+                    weakest_name: weakest_state.model_copy(
+                        update={"score_0_to_100": new_score, "last_evaluated_at": event_time}
+                    )
+                }
+            )
             trace = PedagogicalRecalculationTrace(
                 kind="propagation",
                 message=f"{relation} depth={depth} delta={propagation_delta:.2f}",
@@ -264,6 +278,11 @@ class PedagogicalContextBuilder:
                 domain=related_concept.domain,
                 mastery_score_0_to_100=new_score,
                 mastery_label=self._label_for_score(new_score),
+                dimensions=propagated_dimensions,
+                confidence_0_to_1=previous.confidence_0_to_1 if previous else 0.2,
+                trend=stats.trend,
+                priority_score=self._priority_for_state(propagated_dimensions, previous.confidence_0_to_1 if previous else 0.2),
+                last_block_id=previous.last_block_id if previous else None,
                 recent_history=existing_history,
                 recent_stats=stats,
                 weaknesses=self._weaknesses_for_score(new_score, related_concept.canonical_name),
@@ -297,6 +316,12 @@ class PedagogicalContextBuilder:
         )
         decayed_score = self._apply_decay(blended_score, event.recorded_at)
         recent_stats = self._build_recent_stats(fresh_history)
+        dimensions = self._dimensions_from_legacy_event(
+            existing=existing.dimensions if existing else None,
+            score=decayed_score,
+            recorded_at=event.recorded_at,
+        )
+        confidence = self._confidence_for_history(fresh_history)
         trace = PedagogicalRecalculationTrace(
             kind="concept_recalculation",
             message=(
@@ -313,6 +338,11 @@ class PedagogicalContextBuilder:
             domain=event.domain,
             mastery_score_0_to_100=decayed_score,
             mastery_label=self._label_for_score(decayed_score),
+            dimensions=dimensions,
+            confidence_0_to_1=confidence,
+            trend=recent_stats.trend,
+            priority_score=self._priority_for_state(dimensions, confidence),
+            last_block_id=existing.last_block_id if existing else None,
             recent_history=fresh_history,
             recent_stats=recent_stats,
             weaknesses=self._weaknesses_for_score(decayed_score, concept_name),
@@ -505,6 +535,42 @@ class PedagogicalContextBuilder:
     @staticmethod
     def _clamp_score(value: float) -> float:
         return max(0.0, min(100.0, round(value, 2)))
+
+    @staticmethod
+    def _dimensions_from_legacy_event(
+        *,
+        existing: PedagogicalDimensionStates | None,
+        score: float,
+        recorded_at: str,
+    ) -> PedagogicalDimensionStates:
+        if existing is None:
+            return PedagogicalDimensionStates(
+                recognition=PedagogicalDimensionState(score_0_to_100=score, last_evaluated_at=recorded_at),
+                recall=PedagogicalDimensionState(score_0_to_100=score, last_evaluated_at=recorded_at),
+                explanation=PedagogicalDimensionState(score_0_to_100=score, last_evaluated_at=recorded_at),
+                application=PedagogicalDimensionState(score_0_to_100=score, last_evaluated_at=recorded_at),
+            )
+        weakest_name, weakest_state = existing.weakest_dimension()
+        return existing.model_copy(
+            update={
+                weakest_name: weakest_state.model_copy(
+                    update={"score_0_to_100": score, "last_evaluated_at": recorded_at}
+                )
+            }
+        )
+
+    @staticmethod
+    def _confidence_for_history(history: list[PedagogicalEvaluationEvent]) -> float:
+        if not history:
+            return 0.25
+        return min(1.0, 0.25 + len(history) * 0.15)
+
+    @staticmethod
+    def _priority_for_state(dimensions: PedagogicalDimensionStates, confidence_0_to_1: float) -> float:
+        weakest_score = dimensions.weakest_dimension()[1].score_0_to_100
+        need = 1.0 - (weakest_score / 100.0)
+        confidence_gap = 1.0 - confidence_0_to_1
+        return round(max(0.0, min(1.0, (need * 0.7) + (confidence_gap * 0.3))), 2)
 
     @staticmethod
     def _dedupe_strings(values: list[str]) -> list[str]:

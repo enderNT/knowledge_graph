@@ -77,6 +77,25 @@ class MCPBackendClient:
             },
         )
 
+    async def create_concept(
+        self,
+        *,
+        canonical_name: str,
+        aliases: list[str] | None = None,
+        domain: str,
+        description: str = "",
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/concepts",
+            json={
+                "canonical_name": canonical_name,
+                "aliases": aliases or [],
+                "domain": domain,
+                "description": description,
+            },
+        )
+
     async def get_job(self, job_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/v1/jobs/{job_id}")
 
@@ -192,9 +211,56 @@ class MCPBackendClient:
             },
         )
 
+    async def start_adaptive_session(
+        self,
+        *,
+        user_id: str,
+        query: str | None = None,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        domain_hint: str | None = None,
+        language: str = "es",
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/adaptive/sessions/start",
+            json={
+                "user_id": user_id,
+                "query": query,
+                "episode_id": episode_id,
+                "job_id": job_id,
+                "domain_hint": domain_hint,
+                "language": language,
+                "constraints": constraints or {},
+            },
+        )
+
+    async def submit_adaptive_block(
+        self,
+        *,
+        session_id: str,
+        block_id: str,
+        submissions: list[dict[str, Any]],
+        interaction_events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/v1/adaptive/sessions/{session_id}/submit",
+            json={
+                "block_id": block_id,
+                "submissions": submissions,
+                "interaction_events": interaction_events or [],
+            },
+        )
+
+    async def get_adaptive_session(self, *, session_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/v1/adaptive/sessions/{session_id}")
+
     async def upsert_concept(
         self,
         *,
+        uid: str | None = None,
         canonical_name: str,
         aliases: list[str] | None = None,
         domain: str,
@@ -204,6 +270,7 @@ class MCPBackendClient:
             "PUT",
             "/v1/concepts/upsert",
             json={
+                "uid": uid,
                 "canonical_name": canonical_name,
                 "aliases": aliases or [],
                 "domain": domain,

@@ -91,6 +91,7 @@ class FakeBackendClient:
             "failure_reason": None,
         }
         self.upsert_result = {"concept": {"uid": "cn_1"}, "created": True}
+        self.create_result = {"concept": {"uid": "cn_strict"}, "created": True}
         self.link_result = {"status": "linked"}
         self.neighborhood_result = {"concept": {"uid": "cn_1"}, "nodes": [], "relations": [], "claims": [], "episodes": []}
         self.pedagogical_context_result = {
@@ -120,6 +121,136 @@ class FakeBackendClient:
             "warnings": [],
         }
         self.pedagogical_session_view_result = self.pedagogical_update_result["session_view"]
+        self.adaptive_session_result = {
+            "session": {
+                "session_id": "ads_1",
+                "user_id": "user-1",
+                "resolved_reference": self.tutor_context_result["resolved_reference"],
+                "domain_hint": "Psicología",
+                "language": "es",
+                "constraints": {"max_items_per_block": 3, "max_blocks": 4, "allowed_question_types": ["multiple_choice_single", "multiple_choice_multi", "true_false", "cloze", "open"], "preferred_max_difficulty": None, "allow_scaffolding": True},
+                "tutor_context": self.tutor_context_result,
+                "current_block": {
+                    "block_id": "blk_1",
+                    "plan": {
+                        "block_id": "blk_1",
+                        "block_goal": "reinforce_weak",
+                        "target_concept_uid": "cn_1",
+                        "target_concept_name": "Memoria episódica",
+                        "target_dimensions": ["recognition"],
+                        "recommended_question_types": ["multiple_choice_single", "true_false"],
+                        "difficulty": "intermediate",
+                        "scaffolding": {
+                            "allow_hint_after_error": True,
+                            "allow_rephrase_retry": True,
+                            "allow_difficulty_drop_next_item": False,
+                            "show_corrective_explanation_at_end": True,
+                        },
+                        "success_criteria": {
+                            "min_block_score": 0.7,
+                            "min_dimension_signal": 0.65,
+                            "max_supported_answers_ratio": 0.5,
+                        },
+                        "next_step_policy": {
+                            "on_success": "shift_dimension_within_concept_then_reprioritize",
+                            "on_partial_high": "stay_local_with_light_support",
+                            "on_partial_low": "decrease_difficulty_and_return_to_basic_dimension",
+                            "on_failure": "decrease_difficulty_and_move_to_related_or_prerequisite",
+                        },
+                        "planner_explanation": "priorizar reconocimiento",
+                    },
+                    "items": [],
+                    "answer_keys": [],
+                    "generated_at": "2026-06-06T10:00:00+00:00",
+                },
+                "block_history": [],
+                "summary": {
+                    "total_blocks": 4,
+                    "completed_blocks": 0,
+                    "latest_block_verdict": None,
+                    "session_closed": False,
+                    "closure_reason": None,
+                },
+                "status": "active",
+                "opened_at": "2026-06-06T10:00:00+00:00",
+                "updated_at": "2026-06-06T10:00:00+00:00",
+            },
+            "current_block": {
+                "block_id": "blk_1",
+                "plan": {
+                    "block_id": "blk_1",
+                    "block_goal": "reinforce_weak",
+                    "target_concept_uid": "cn_1",
+                    "target_concept_name": "Memoria episódica",
+                    "target_dimensions": ["recognition"],
+                    "recommended_question_types": ["multiple_choice_single", "true_false"],
+                    "difficulty": "intermediate",
+                    "scaffolding": {
+                        "allow_hint_after_error": True,
+                        "allow_rephrase_retry": True,
+                        "allow_difficulty_drop_next_item": False,
+                        "show_corrective_explanation_at_end": True,
+                    },
+                    "success_criteria": {
+                        "min_block_score": 0.7,
+                        "min_dimension_signal": 0.65,
+                        "max_supported_answers_ratio": 0.5,
+                    },
+                    "next_step_policy": {
+                        "on_success": "shift_dimension_within_concept_then_reprioritize",
+                        "on_partial_high": "stay_local_with_light_support",
+                        "on_partial_low": "decrease_difficulty_and_return_to_basic_dimension",
+                        "on_failure": "decrease_difficulty_and_move_to_related_or_prerequisite",
+                    },
+                    "planner_explanation": "priorizar reconocimiento",
+                },
+                "items": [],
+                "answer_keys": [],
+                "generated_at": "2026-06-06T10:00:00+00:00",
+            },
+            "planner_explanation": "priorizar reconocimiento",
+            "grounding_status": "ok",
+        }
+        self.adaptive_submit_result = {
+            "session": {
+                **self.adaptive_session_result["session"],
+                "current_block": None,
+                "block_history": [
+                    {
+                        "block_id": "blk_1",
+                        "item_results": [],
+                        "dimension_summary": {"recognition": 1.0},
+                        "block_verdict": "correct",
+                        "block_score": 1.0,
+                        "recommended_next_action": "shift_dimension_within_concept_then_reprioritize",
+                        "corrective_explanation": "explicacion",
+                        "transition_explanation": "transicion",
+                    }
+                ],
+                "summary": {
+                    "total_blocks": 4,
+                    "completed_blocks": 1,
+                    "latest_block_verdict": "correct",
+                    "session_closed": True,
+                    "closure_reason": "coverage_sufficient",
+                },
+                "status": "closed",
+            },
+            "block_result": {
+                "block_id": "blk_1",
+                "item_results": [],
+                "dimension_summary": {"recognition": 1.0},
+                "block_verdict": "correct",
+                "block_score": 1.0,
+                "recommended_next_action": "shift_dimension_within_concept_then_reprioritize",
+                "corrective_explanation": "explicacion",
+                "transition_explanation": "transicion",
+            },
+            "updated_context": self.pedagogical_context_result,
+            "next_action": "shift_dimension_within_concept_then_reprioritize",
+            "next_block": None,
+            "session_closed": True,
+        }
         self.link_error: Exception | None = None
 
     async def ingest_fragment_and_wait(self, **_: Any) -> dict[str, Any]:
@@ -133,6 +264,9 @@ class FakeBackendClient:
 
     async def get_tutor_context(self, **_: Any) -> dict[str, Any]:
         return self.tutor_context_result
+
+    async def create_concept(self, **_: Any) -> dict[str, Any]:
+        return self.create_result
 
     async def upsert_concept(self, **_: Any) -> dict[str, Any]:
         return self.upsert_result
@@ -153,6 +287,15 @@ class FakeBackendClient:
 
     async def get_pedagogical_session_view(self, **_: Any) -> dict[str, Any]:
         return self.pedagogical_session_view_result
+
+    async def start_adaptive_session(self, **_: Any) -> dict[str, Any]:
+        return self.adaptive_session_result
+
+    async def submit_adaptive_block(self, **_: Any) -> dict[str, Any]:
+        return self.adaptive_submit_result
+
+    async def get_adaptive_session(self, **_: Any) -> dict[str, Any]:
+        return self.adaptive_session_result["session"]
 
     async def check_ready(self) -> tuple[bool, dict[str, Any]]:
         return self.ready
@@ -208,18 +351,22 @@ async def client_session() -> AsyncGenerator[Any]:
 
 
 @pytest.mark.anyio
-async def test_mcp_server_exposes_exactly_ten_tools(client_session):
+async def test_mcp_server_exposes_exactly_fourteen_tools(client_session):
     tools = await client_session.list_tools()
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
+        "create_concept",
+        "get_adaptive_session",
         "get_learning_context",
+        "get_neighborhood",
         "get_pedagogical_context",
         "get_pedagogical_session_view",
         "get_tutor_context",
-        "get_neighborhood",
         "link_concepts",
         "search_candidates",
+        "start_adaptive_session",
+        "submit_adaptive_block",
         "update_pedagogical_context",
         "upsert_concept",
     ]
@@ -230,6 +377,7 @@ async def test_mcp_server_exposes_exactly_ten_tools(client_session):
     assert tool_map["get_learning_context"].inputSchema["properties"]["candidate_limit"]["default"] == 8
     assert tool_map["get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
     assert tool_map["get_tutor_context"].inputSchema["properties"]["include_evidence"]["default"] is True
+    assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
     assert "from" in tool_map["link_concepts"].inputSchema["properties"]
     assert "depth" in tool_map["get_neighborhood"].inputSchema["properties"]
 
@@ -263,6 +411,20 @@ async def test_mcp_server_translates_tool_results_and_errors():
         assert tutor_context.structuredContent["status"] == "ok"
         assert tutor_context.structuredContent["resolved_reference"]["resolved_concept_uid"] == "cn_1"
 
+        adaptive_start = await session.call_tool(
+            "start_adaptive_session",
+            {"user_id": "user-1", "query": "memoria"},
+        )
+        assert adaptive_start.isError in {False, None}
+        assert adaptive_start.structuredContent["grounding_status"] == "ok"
+
+        adaptive_submit = await session.call_tool(
+            "submit_adaptive_block",
+            {"session_id": "ads_1", "block_id": "blk_1", "submissions": [{"item_id": "blk_1_item_1", "selected_choices": [0]}]},
+        )
+        assert adaptive_submit.isError in {False, None}
+        assert adaptive_submit.structuredContent["session_closed"] is True
+
         pedagogical_context = await session.call_tool(
             "get_pedagogical_context",
             {"user_id": "user-1"},
@@ -279,6 +441,13 @@ async def test_mcp_server_translates_tool_results_and_errors():
         )
         assert pedagogical_update.isError in {False, None}
         assert pedagogical_update.structuredContent["session_view"]["effective_depth_used"] == 3
+
+        create_concept = await session.call_tool(
+            "create_concept",
+            {"canonical_name": "Memoria", "domain": "Psicología"},
+        )
+        assert create_concept.isError in {False, None}
+        assert create_concept.structuredContent["concept"]["uid"] == "cn_strict"
 
         backend.link_error = MCPBackendError("source or target concept not found", status_code=404)
         link = await session.call_tool(
@@ -316,13 +485,17 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
+        "create_concept",
+        "get_adaptive_session",
         "get_learning_context",
+        "get_neighborhood",
         "get_pedagogical_context",
         "get_pedagogical_session_view",
         "get_tutor_context",
-        "get_neighborhood",
         "link_concepts",
         "search_candidates",
+        "start_adaptive_session",
+        "submit_adaptive_block",
         "update_pedagogical_context",
         "upsert_concept",
     ]

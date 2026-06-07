@@ -31,6 +31,8 @@ DOCUMENT_TYPES = [
     "UserConceptMastery",
     "UserDomainMastery",
     "UserEvaluationEvent",
+    "AdaptiveSession",
+    "AdaptiveBlockAttempt",
 ]
 
 
@@ -93,6 +95,11 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE PROPERTY UserConceptMastery.domain IF NOT EXISTS STRING",
             "CREATE PROPERTY UserConceptMastery.mastery_score_0_to_100 IF NOT EXISTS DOUBLE",
             "CREATE PROPERTY UserConceptMastery.mastery_label IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.dimensions_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.confidence_0_to_1 IF NOT EXISTS DOUBLE",
+            "CREATE PROPERTY UserConceptMastery.trend IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.priority_score IF NOT EXISTS DOUBLE",
+            "CREATE PROPERTY UserConceptMastery.last_block_id IF NOT EXISTS STRING",
             "CREATE PROPERTY UserConceptMastery.recent_history_json IF NOT EXISTS STRING",
             "CREATE PROPERTY UserConceptMastery.recent_stats_json IF NOT EXISTS STRING",
             "CREATE PROPERTY UserConceptMastery.weaknesses_json IF NOT EXISTS STRING",
@@ -119,6 +126,29 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE PROPERTY UserEvaluationEvent.score_0_to_100 IF NOT EXISTS DOUBLE",
             "CREATE PROPERTY UserEvaluationEvent.recorded_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY UserEvaluationEvent.source IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.session_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.user_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.status IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.resolved_reference_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.domain_hint IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.language IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.constraints_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.tutor_context_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.current_block_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.block_history_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.summary_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.opened_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY AdaptiveSession.updated_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY AdaptiveBlockAttempt.session_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.block_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.plan_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.items_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.answer_keys_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.submissions_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.interaction_events_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.block_result_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveBlockAttempt.created_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY AdaptiveBlockAttempt.updated_at IF NOT EXISTS DATETIME",
         ]
     )
 
@@ -155,6 +185,12 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (concept_uid) NOTUNIQUE",
             "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (domain) NOTUNIQUE",
             "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (recorded_at) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON AdaptiveSession (session_id) UNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON AdaptiveSession (user_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON AdaptiveSession (updated_at) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON AdaptiveBlockAttempt (block_id) UNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON AdaptiveBlockAttempt (session_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON AdaptiveBlockAttempt (updated_at) NOTUNIQUE",
             (
                 "CREATE INDEX IF NOT EXISTS ON Concept (embedding) LSM_VECTOR "
                 f"METADATA {{dimensions: {settings.embedding_dimensions}, similarity: 'COSINE'}}"
