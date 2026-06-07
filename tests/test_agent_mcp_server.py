@@ -222,6 +222,57 @@ class FakeKnowledgeBackendClient:
             ],
         }
 
+    async def get_pedagogical_context(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "user_id": kwargs["user_id"],
+            "status": "ok",
+            "concepts": [],
+            "domains": [],
+            "recent_evaluations": [],
+            "warnings": [],
+        }
+
+    async def update_pedagogical_context(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "user_id": kwargs["user_id"],
+            "status": "ok",
+            "context": {
+                "user_id": kwargs["user_id"],
+                "status": "ok",
+                "concepts": [],
+                "domains": [],
+                "recent_evaluations": [],
+                "warnings": [],
+            },
+            "session_view": {
+                "user_id": kwargs["user_id"],
+                "status": "ok",
+                "summary": "Priorizar conceptos debiles.",
+                "weak_concepts": [],
+                "detected_gaps": [],
+                "suggested_questions": [],
+                "effective_depth_used": 3,
+                "domain_focus": [],
+                "recalculation_traces": [],
+                "warnings": [],
+            },
+            "warnings": [],
+        }
+
+    async def get_pedagogical_session_view(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "user_id": kwargs["user_id"],
+            "status": "ok",
+            "summary": "Priorizar conceptos debiles.",
+            "weak_concepts": [],
+            "detected_gaps": [],
+            "suggested_questions": [],
+            "effective_depth_used": 3,
+            "domain_focus": [],
+            "recalculation_traces": [],
+            "warnings": [],
+        }
+
     async def check_ready(self) -> tuple[bool, dict[str, Any]]:
         return self.ready
 
@@ -304,7 +355,7 @@ async def client_session(
 
 
 @pytest.mark.anyio
-async def test_agent_mcp_exposes_exactly_ten_tools(client_session):
+async def test_agent_mcp_exposes_exactly_thirteen_tools(client_session):
     tools = await client_session.list_tools()
     assert sorted(tool.name for tool in tools.tools) == [
         "evaluate_answer",
@@ -312,10 +363,13 @@ async def test_agent_mcp_exposes_exactly_ten_tools(client_session):
         "generate_quiz",
         "kg_add_knowledge_fragment",
         "kg_get_learning_context",
+        "kg_get_pedagogical_context",
+        "kg_get_pedagogical_session_view",
         "kg_get_tutor_context",
         "kg_get_neighborhood",
         "kg_link_concepts",
         "kg_search_candidates",
+        "kg_update_pedagogical_context",
         "kg_upsert_concept",
     ]
 
@@ -323,6 +377,7 @@ async def test_agent_mcp_exposes_exactly_ten_tools(client_session):
     assert tool_map["generate_quiz"].inputSchema["properties"]["question_count"]["default"] == 5
     assert tool_map["explain_topic"].inputSchema["properties"]["audience"]["default"] == "intermediate"
     assert tool_map["kg_get_tutor_context"].inputSchema["properties"]["depth"]["default"] == 1
+    assert tool_map["kg_get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
     assert "from" in tool_map["kg_link_concepts"].inputSchema["properties"]
 
 
@@ -431,6 +486,18 @@ async def test_agent_passthrough_tools_preserve_shape_and_from_alias(
     assert tutor_context.structuredContent["status"] == "ok"
     assert tutor_context.structuredContent["resolved_reference"]["resolved_concept_uid"] == "cn_1"
 
+    pedagogical_context = await client_session.call_tool(
+        "kg_get_pedagogical_context",
+        {"user_id": "user-1"},
+    )
+    assert pedagogical_context.structuredContent["user_id"] == "user-1"
+
+    pedagogical_update = await client_session.call_tool(
+        "kg_update_pedagogical_context",
+        {"user_id": "user-1", "evaluations": [{"concept_uid": "cn_1", "score_0_to_100": 68}]},
+    )
+    assert pedagogical_update.structuredContent["session_view"]["effective_depth_used"] == 3
+
 
 @pytest.mark.anyio
 async def test_agent_streamable_http_client_works_with_documented_url(
@@ -457,4 +524,4 @@ async def test_agent_streamable_http_client_works_with_documented_url(
                     await session.initialize()
                     tools = await session.list_tools()
 
-    assert len(tools.tools) == 10
+    assert len(tools.tools) == 13

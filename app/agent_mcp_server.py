@@ -82,6 +82,32 @@ class AgentUpstreamProtocol(Protocol):
 
     async def get_neighborhood(self, *, concept: str, depth: int = 1) -> dict[str, Any]: ...
 
+    async def get_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        domain: str | None = None,
+        concept_uids: list[str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def update_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        evaluations: list[dict[str, Any]],
+        domain_hint: str | None = None,
+        session_closed_at: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def get_pedagogical_session_view(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        concept_uids: list[str] | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]: ...
+
 
 class AgentContentProtocol(Protocol):
     async def close(self) -> None: ...
@@ -109,7 +135,7 @@ def create_agent_mcp_server(
         instructions=(
             "Agent-facing MCP proxy over the internal knowledge graph MCP. "
             "Use explain_topic, generate_quiz and evaluate_answer for grounded pedagogy. "
-            "Use kg_* tools for direct graph inspection and curation."
+            "Use kg_* tools for direct graph inspection, pedagogical context and curation."
         ),
         host="0.0.0.0",
         stateless_http=True,
@@ -290,6 +316,55 @@ def create_agent_mcp_server(
     ) -> dict[str, Any]:
         try:
             return await upstream.get_neighborhood(concept=concept, depth=depth)
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_get_pedagogical_context")
+    async def kg_get_pedagogical_context(
+        user_id: Annotated[str, Field(min_length=1)],
+        domain: str | None = None,
+        concept_uids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.get_pedagogical_context(
+                user_id=user_id,
+                domain=domain,
+                concept_uids=concept_uids,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_update_pedagogical_context")
+    async def kg_update_pedagogical_context(
+        user_id: Annotated[str, Field(min_length=1)],
+        evaluations: list[dict[str, Any]],
+        domain_hint: str | None = None,
+        session_closed_at: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.update_pedagogical_context(
+                user_id=user_id,
+                evaluations=evaluations,
+                domain_hint=domain_hint,
+                session_closed_at=session_closed_at,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_get_pedagogical_session_view")
+    async def kg_get_pedagogical_session_view(
+        user_id: Annotated[str, Field(min_length=1)],
+        domain_hint: str | None = None,
+        concept_uids: list[str] | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await upstream.get_pedagogical_session_view(
+                user_id=user_id,
+                domain_hint=domain_hint,
+                concept_uids=concept_uids,
+                query=query,
+            )
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 

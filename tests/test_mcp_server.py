@@ -93,6 +93,33 @@ class FakeBackendClient:
         self.upsert_result = {"concept": {"uid": "cn_1"}, "created": True}
         self.link_result = {"status": "linked"}
         self.neighborhood_result = {"concept": {"uid": "cn_1"}, "nodes": [], "relations": [], "claims": [], "episodes": []}
+        self.pedagogical_context_result = {
+            "user_id": "user-1",
+            "status": "ok",
+            "concepts": [],
+            "domains": [],
+            "recent_evaluations": [],
+            "warnings": [],
+        }
+        self.pedagogical_update_result = {
+            "user_id": "user-1",
+            "status": "ok",
+            "context": self.pedagogical_context_result,
+            "session_view": {
+                "user_id": "user-1",
+                "status": "ok",
+                "summary": "Priorizar conceptos debiles.",
+                "weak_concepts": [],
+                "detected_gaps": [],
+                "suggested_questions": [],
+                "effective_depth_used": 3,
+                "domain_focus": [],
+                "recalculation_traces": [],
+                "warnings": [],
+            },
+            "warnings": [],
+        }
+        self.pedagogical_session_view_result = self.pedagogical_update_result["session_view"]
         self.link_error: Exception | None = None
 
     async def ingest_fragment_and_wait(self, **_: Any) -> dict[str, Any]:
@@ -117,6 +144,15 @@ class FakeBackendClient:
 
     async def get_neighborhood(self, **_: Any) -> dict[str, Any]:
         return self.neighborhood_result
+
+    async def get_pedagogical_context(self, **_: Any) -> dict[str, Any]:
+        return self.pedagogical_context_result
+
+    async def update_pedagogical_context(self, **_: Any) -> dict[str, Any]:
+        return self.pedagogical_update_result
+
+    async def get_pedagogical_session_view(self, **_: Any) -> dict[str, Any]:
+        return self.pedagogical_session_view_result
 
     async def check_ready(self) -> tuple[bool, dict[str, Any]]:
         return self.ready
@@ -172,16 +208,19 @@ async def client_session() -> AsyncGenerator[Any]:
 
 
 @pytest.mark.anyio
-async def test_mcp_server_exposes_exactly_seven_tools(client_session):
+async def test_mcp_server_exposes_exactly_ten_tools(client_session):
     tools = await client_session.list_tools()
 
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
         "get_learning_context",
+        "get_pedagogical_context",
+        "get_pedagogical_session_view",
         "get_tutor_context",
         "get_neighborhood",
         "link_concepts",
         "search_candidates",
+        "update_pedagogical_context",
         "upsert_concept",
     ]
 
@@ -189,6 +228,7 @@ async def test_mcp_server_exposes_exactly_seven_tools(client_session):
     assert tool_map["add_knowledge_fragment"].inputSchema["properties"]["text"]["type"] == "string"
     assert tool_map["search_candidates"].inputSchema["properties"]["limit"]["default"] == 10
     assert tool_map["get_learning_context"].inputSchema["properties"]["candidate_limit"]["default"] == 8
+    assert tool_map["get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
     assert tool_map["get_tutor_context"].inputSchema["properties"]["include_evidence"]["default"] is True
     assert "from" in tool_map["link_concepts"].inputSchema["properties"]
     assert "depth" in tool_map["get_neighborhood"].inputSchema["properties"]
@@ -222,6 +262,23 @@ async def test_mcp_server_translates_tool_results_and_errors():
         assert tutor_context.isError in {False, None}
         assert tutor_context.structuredContent["status"] == "ok"
         assert tutor_context.structuredContent["resolved_reference"]["resolved_concept_uid"] == "cn_1"
+
+        pedagogical_context = await session.call_tool(
+            "get_pedagogical_context",
+            {"user_id": "user-1"},
+        )
+        assert pedagogical_context.isError in {False, None}
+        assert pedagogical_context.structuredContent["user_id"] == "user-1"
+
+        pedagogical_update = await session.call_tool(
+            "update_pedagogical_context",
+            {
+                "user_id": "user-1",
+                "evaluations": [{"concept_uid": "cn_1", "score_0_to_100": 72}],
+            },
+        )
+        assert pedagogical_update.isError in {False, None}
+        assert pedagogical_update.structuredContent["session_view"]["effective_depth_used"] == 3
 
         backend.link_error = MCPBackendError("source or target concept not found", status_code=404)
         link = await session.call_tool(
@@ -260,9 +317,12 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
     assert sorted(tool.name for tool in tools.tools) == [
         "add_knowledge_fragment",
         "get_learning_context",
+        "get_pedagogical_context",
+        "get_pedagogical_session_view",
         "get_tutor_context",
         "get_neighborhood",
         "link_concepts",
         "search_candidates",
+        "update_pedagogical_context",
         "upsert_concept",
     ]

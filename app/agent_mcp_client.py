@@ -52,6 +52,9 @@ class AgentMCPUpstreamClient:
             "upsert_concept",
             "link_concepts",
             "get_neighborhood",
+            "get_pedagogical_context",
+            "update_pedagogical_context",
+            "get_pedagogical_session_view",
         }
         missing = sorted(expected.difference(names))
         if missing:
@@ -203,6 +206,54 @@ class AgentMCPUpstreamClient:
         return await self.call_tool(
             "get_neighborhood",
             {"concept": concept, "depth": depth},
+        )
+
+    async def get_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        domain: str | None = None,
+        concept_uids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "get_pedagogical_context",
+            {"user_id": user_id, "domain": domain, "concept_uids": concept_uids or []},
+        )
+
+    async def update_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        evaluations: list[dict[str, Any]],
+        domain_hint: str | None = None,
+        session_closed_at: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "update_pedagogical_context",
+            {
+                "user_id": user_id,
+                "evaluations": evaluations,
+                "domain_hint": domain_hint,
+                "session_closed_at": session_closed_at,
+            },
+        )
+
+    async def get_pedagogical_session_view(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        concept_uids: list[str] | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "get_pedagogical_session_view",
+            {
+                "user_id": user_id,
+                "domain_hint": domain_hint,
+                "concept_uids": concept_uids or [],
+                "query": query,
+            },
         )
 
     @asynccontextmanager

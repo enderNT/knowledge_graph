@@ -15,11 +15,18 @@ from app.schemas import (
     ClaimRecord,
     ConceptRecord,
     EpisodeRecord,
+    GetPedagogicalContextResponse,
     IngestionSummary,
     JobRecord,
     NeighborhoodNode,
     NeighborhoodRelation,
     NeighborhoodResponse,
+    PEDAGOGICAL_RELATIONS,
+    PedagogicalConceptState,
+    PedagogicalDomainState,
+    PedagogicalEvaluationEvent,
+    PedagogicalRecentStats,
+    PedagogicalRecalculationTrace,
     TutorContextBundle,
     TutorContextClaim,
     TutorContextConcept,
@@ -53,6 +60,17 @@ class KnowledgeStore(Protocol):
     async def get_neighborhood(self, concept_ref: str, depth: int) -> NeighborhoodResponse | None: ...
     async def get_tutor_context_for_episode(self, episode_id: str, depth: int = 1) -> TutorContextBundle | None: ...
     async def get_tutor_context_for_concept(self, concept_ref: str, depth: int = 1) -> TutorContextBundle | None: ...
+    async def get_pedagogical_context(self, *, user_id: str) -> GetPedagogicalContextResponse: ...
+    async def upsert_pedagogical_concept_state(self, state: PedagogicalConceptState) -> None: ...
+    async def upsert_pedagogical_domain_state(self, state: PedagogicalDomainState) -> None: ...
+    async def append_pedagogical_evaluation_event(self, event: PedagogicalEvaluationEvent) -> None: ...
+    async def get_pedagogical_related_concepts(
+        self,
+        *,
+        concept_uid: str,
+        max_depth: int,
+        allowed_relations: set[str],
+    ) -> list[dict[str, str | int]]: ...
 
 
 class ArcadeKnowledgeStore:
@@ -757,6 +775,216 @@ class ArcadeKnowledgeStore:
             evidence=evidence,
         )
 
+    async def get_pedagogical_context(self, *, user_id: str) -> GetPedagogicalContextResponse:
+        concept_rows = await self._safe_query(
+            (
+                "SELECT user_id, concept_uid, concept_name, domain, mastery_score_0_to_100, mastery_label, "
+                "recent_history_json, recent_stats_json, weaknesses_json, detected_gaps_json, "
+                "suggested_questions_json, effective_depth_used, last_evaluated_at, updated_at, "
+                "recalculation_traces_json FROM UserConceptMastery WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id},
+        )
+        domain_rows = await self._safe_query(
+            (
+                "SELECT user_id, domain, mastery_score_0_to_100, mastery_label, concept_count, "
+                "weak_concept_uids_json, recent_stats_json, updated_at, recalculation_traces_json "
+                "FROM UserDomainMastery WHERE user_id = :user_id"
+            ),
+            {"user_id": user_id},
+        )
+        event_rows = await self._safe_query(
+            (
+                "SELECT user_id, concept_uid, concept_name, domain, score_0_to_100, recorded_at, source "
+                "FROM UserEvaluationEvent WHERE user_id = :user_id ORDER BY recorded_at DESC LIMIT 20"
+            ),
+            {"user_id": user_id},
+        )
+
+        concepts = [
+            PedagogicalConceptState(
+                user_id=row["user_id"],
+                concept_uid=row["concept_uid"],
+                concept_name=row.get("concept_name") or "",
+                domain=row["domain"],
+                mastery_score_0_to_100=float(row.get("mastery_score_0_to_100") or 0.0),
+                mastery_label=row.get("mastery_label") or "muy bajo",
+                recent_history=self._parse_model_list(row.get("recent_history_json"), PedagogicalEvaluationEvent),
+                recent_stats=self._parse_model(row.get("recent_stats_json"), PedagogicalRecentStats),
+                weaknesses=self._parse_string_list(row.get("weaknesses_json")),
+                detected_gaps=self._parse_string_list(row.get("detected_gaps_json")),
+                suggested_questions=self._parse_string_list(row.get("suggested_questions_json")),
+                effective_depth_used=int(row.get("effective_depth_used") or 3),
+                last_evaluated_at=row.get("last_evaluated_at"),
+                updated_at=row.get("updated_at") or utcnow_iso(),
+                recalculation_traces=self._parse_model_list(row.get("recalculation_traces_json"), PedagogicalRecalculationTrace),
+            )
+            for row in concept_rows
+        ]
+        domains = [
+            PedagogicalDomainState(
+                user_id=row["user_id"],
+                domain=row["domain"],
+                mastery_score_0_to_100=float(row.get("mastery_score_0_to_100") or 0.0),
+                mastery_label=row.get("mastery_label") or "muy bajo",
+                concept_count=int(row.get("concept_count") or 0),
+                weak_concept_uids=self._parse_string_list(row.get("weak_concept_uids_json")),
+                recent_stats=self._parse_model(row.get("recent_stats_json"), PedagogicalRecentStats),
+                updated_at=row.get("updated_at") or utcnow_iso(),
+                recalculation_traces=self._parse_model_list(row.get("recalculation_traces_json"), PedagogicalRecalculationTrace),
+            )
+            for row in domain_rows
+        ]
+        events = [PedagogicalEvaluationEvent.model_validate(row) for row in event_rows]
+        status = "ok" if concepts and domains else ("sparse" if concepts or domains else "not_found")
+        warnings = [] if status != "not_found" else ["empty_user_context"]
+        return GetPedagogicalContextResponse(
+            user_id=user_id,
+            status=status,
+            concepts=concepts,
+            domains=domains,
+            recent_evaluations=events,
+            warnings=warnings,
+        )
+
+    async def upsert_pedagogical_concept_state(self, state: PedagogicalConceptState) -> None:
+        payload = {
+            "user_id": state.user_id,
+            "concept_uid": state.concept_uid,
+            "concept_name": state.concept_name,
+            "domain": state.domain,
+            "mastery_score_0_to_100": state.mastery_score_0_to_100,
+            "mastery_label": state.mastery_label,
+            "recent_history_json": json.dumps([item.model_dump() for item in state.recent_history]),
+            "recent_stats_json": state.recent_stats.model_dump_json(),
+            "weaknesses_json": json.dumps(state.weaknesses),
+            "detected_gaps_json": json.dumps(state.detected_gaps),
+            "suggested_questions_json": json.dumps(state.suggested_questions),
+            "effective_depth_used": state.effective_depth_used,
+            "last_evaluated_at": state.last_evaluated_at,
+            "updated_at": state.updated_at,
+            "recalculation_traces_json": json.dumps([item.model_dump() for item in state.recalculation_traces]),
+        }
+        rows = await self._safe_query(
+            "SELECT user_id FROM UserConceptMastery WHERE user_id = :user_id AND concept_uid = :concept_uid LIMIT 1",
+            {"user_id": state.user_id, "concept_uid": state.concept_uid},
+        )
+        if rows:
+            await self.client.command(
+                (
+                    "UPDATE UserConceptMastery SET concept_name = :concept_name, domain = :domain, "
+                    "mastery_score_0_to_100 = :mastery_score_0_to_100, mastery_label = :mastery_label, "
+                    "recent_history_json = :recent_history_json, recent_stats_json = :recent_stats_json, "
+                    "weaknesses_json = :weaknesses_json, detected_gaps_json = :detected_gaps_json, "
+                    "suggested_questions_json = :suggested_questions_json, effective_depth_used = :effective_depth_used, "
+                    "last_evaluated_at = :last_evaluated_at, updated_at = :updated_at, "
+                    "recalculation_traces_json = :recalculation_traces_json "
+                    "WHERE user_id = :user_id AND concept_uid = :concept_uid"
+                ),
+                payload,
+            )
+            return
+        await self.client.command(
+            (
+                "INSERT INTO UserConceptMastery SET user_id = :user_id, concept_uid = :concept_uid, "
+                "concept_name = :concept_name, domain = :domain, mastery_score_0_to_100 = :mastery_score_0_to_100, "
+                "mastery_label = :mastery_label, recent_history_json = :recent_history_json, "
+                "recent_stats_json = :recent_stats_json, weaknesses_json = :weaknesses_json, "
+                "detected_gaps_json = :detected_gaps_json, suggested_questions_json = :suggested_questions_json, "
+                "effective_depth_used = :effective_depth_used, last_evaluated_at = :last_evaluated_at, "
+                "updated_at = :updated_at, recalculation_traces_json = :recalculation_traces_json"
+            ),
+            payload,
+        )
+
+    async def upsert_pedagogical_domain_state(self, state: PedagogicalDomainState) -> None:
+        payload = {
+            "user_id": state.user_id,
+            "domain": state.domain,
+            "mastery_score_0_to_100": state.mastery_score_0_to_100,
+            "mastery_label": state.mastery_label,
+            "concept_count": state.concept_count,
+            "weak_concept_uids_json": json.dumps(state.weak_concept_uids),
+            "recent_stats_json": state.recent_stats.model_dump_json(),
+            "updated_at": state.updated_at,
+            "recalculation_traces_json": json.dumps([item.model_dump() for item in state.recalculation_traces]),
+        }
+        rows = await self._safe_query(
+            "SELECT user_id FROM UserDomainMastery WHERE user_id = :user_id AND domain = :domain LIMIT 1",
+            {"user_id": state.user_id, "domain": state.domain},
+        )
+        if rows:
+            await self.client.command(
+                (
+                    "UPDATE UserDomainMastery SET mastery_score_0_to_100 = :mastery_score_0_to_100, "
+                    "mastery_label = :mastery_label, concept_count = :concept_count, "
+                    "weak_concept_uids_json = :weak_concept_uids_json, recent_stats_json = :recent_stats_json, "
+                    "updated_at = :updated_at, recalculation_traces_json = :recalculation_traces_json "
+                    "WHERE user_id = :user_id AND domain = :domain"
+                ),
+                payload,
+            )
+            return
+        await self.client.command(
+            (
+                "INSERT INTO UserDomainMastery SET user_id = :user_id, domain = :domain, "
+                "mastery_score_0_to_100 = :mastery_score_0_to_100, mastery_label = :mastery_label, "
+                "concept_count = :concept_count, weak_concept_uids_json = :weak_concept_uids_json, "
+                "recent_stats_json = :recent_stats_json, updated_at = :updated_at, "
+                "recalculation_traces_json = :recalculation_traces_json"
+            ),
+            payload,
+        )
+
+    async def append_pedagogical_evaluation_event(self, event: PedagogicalEvaluationEvent) -> None:
+        await self.client.command(
+            (
+                "INSERT INTO UserEvaluationEvent SET uid = :uid, user_id = :user_id, concept_uid = :concept_uid, "
+                "concept_name = :concept_name, domain = :domain, score_0_to_100 = :score_0_to_100, "
+                "recorded_at = :recorded_at, source = :source"
+            ),
+            {
+                "uid": make_prefixed_id("uev"),
+                "user_id": event.user_id,
+                "concept_uid": event.concept_uid,
+                "concept_name": event.concept_name,
+                "domain": event.domain,
+                "score_0_to_100": event.score_0_to_100,
+                "recorded_at": event.recorded_at,
+                "source": event.source,
+            },
+        )
+
+    async def get_pedagogical_related_concepts(
+        self,
+        *,
+        concept_uid: str,
+        max_depth: int,
+        allowed_relations: set[str],
+    ) -> list[dict[str, str | int]]:
+        seen = {concept_uid}
+        frontier = [(concept_uid, 0)]
+        results: list[dict[str, str | int]] = []
+        while frontier:
+            current_uid, depth = frontier.pop(0)
+            if depth >= max_depth:
+                continue
+            for row in await self._fetch_neighborhood_edge_rows(current_uid):
+                relation = str(row.get("relation") or "")
+                if relation not in allowed_relations:
+                    continue
+                related_uid = str(
+                    row.get("to_uid") if row.get("from_uid") == current_uid else row.get("from_uid") or ""
+                )
+                if not related_uid or related_uid == current_uid:
+                    continue
+                result = {"concept_uid": related_uid, "relation": relation, "depth": depth + 1}
+                results.append(result)
+                if related_uid not in seen:
+                    seen.add(related_uid)
+                    frontier.append((related_uid, depth + 1))
+        return results
+
     async def _build_tutor_relations(
         self,
         concept_uids: Iterable[str],
@@ -1079,6 +1307,55 @@ class ArcadeKnowledgeStore:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _parse_string_list(raw: object) -> list[str]:
+        if not raw:
+            return []
+        try:
+            data = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [str(item) for item in data]
+
+    @staticmethod
+    def _parse_model(raw: object, model: Any) -> Any:
+        if not raw:
+            return model(
+                recent_average=0.0,
+                trend="insufficient_data",
+                deviation=0.0,
+                last_evaluated_at=None,
+            )
+        try:
+            return model.model_validate_json(str(raw))
+        except Exception:
+            return model(
+                recent_average=0.0,
+                trend="insufficient_data",
+                deviation=0.0,
+                last_evaluated_at=None,
+            )
+
+    @staticmethod
+    def _parse_model_list(raw: object, model: Any) -> list[Any]:
+        if not raw:
+            return []
+        try:
+            data = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        items: list[Any] = []
+        for entry in data:
+            try:
+                items.append(model.model_validate(entry))
+            except Exception:
+                continue
+        return items
+
     def _job_from_row(self, row: dict[str, Any]) -> JobRecord:
         result = row.get("result")
         summary = None
@@ -1107,6 +1384,9 @@ class InMemoryKnowledgeStore:
         self.concept_mentions: set[tuple[str, str]] = set()
         self.claim_support: set[tuple[str, str]] = set()
         self.claim_explains: set[tuple[str, str]] = set()
+        self.user_concept_mastery: dict[tuple[str, str], PedagogicalConceptState] = {}
+        self.user_domain_mastery: dict[tuple[str, str], PedagogicalDomainState] = {}
+        self.user_evaluation_events: dict[str, list[PedagogicalEvaluationEvent]] = {}
 
     async def bootstrap_schema(self) -> None:
         return None
@@ -1508,6 +1788,69 @@ class InMemoryKnowledgeStore:
             source_fragments=list(source_fragments.values()),
             evidence=evidence,
         )
+
+    async def get_pedagogical_context(self, *, user_id: str) -> GetPedagogicalContextResponse:
+        concepts = [
+            state
+            for (stored_user_id, _), state in self.user_concept_mastery.items()
+            if stored_user_id == user_id
+        ]
+        domains = [
+            state
+            for (stored_user_id, _), state in self.user_domain_mastery.items()
+            if stored_user_id == user_id
+        ]
+        events = list(reversed(self.user_evaluation_events.get(user_id, [])))[0:20]
+        status = "ok" if concepts and domains else ("sparse" if concepts or domains else "not_found")
+        warnings = [] if status != "not_found" else ["empty_user_context"]
+        return GetPedagogicalContextResponse(
+            user_id=user_id,
+            status=status,
+            concepts=sorted(concepts, key=lambda item: item.updated_at, reverse=True),
+            domains=sorted(domains, key=lambda item: item.updated_at, reverse=True),
+            recent_evaluations=events,
+            warnings=warnings,
+        )
+
+    async def upsert_pedagogical_concept_state(self, state: PedagogicalConceptState) -> None:
+        self.user_concept_mastery[(state.user_id, state.concept_uid)] = state
+
+    async def upsert_pedagogical_domain_state(self, state: PedagogicalDomainState) -> None:
+        self.user_domain_mastery[(state.user_id, state.domain)] = state
+
+    async def append_pedagogical_evaluation_event(self, event: PedagogicalEvaluationEvent) -> None:
+        items = self.user_evaluation_events.setdefault(event.user_id, [])
+        items.append(event)
+        items.sort(key=lambda item: item.recorded_at)
+
+    async def get_pedagogical_related_concepts(
+        self,
+        *,
+        concept_uid: str,
+        max_depth: int,
+        allowed_relations: set[str],
+    ) -> list[dict[str, str | int]]:
+        results: list[dict[str, str | int]] = []
+        seen = {concept_uid}
+        frontier = [(concept_uid, 0)]
+        while frontier:
+            current_uid, depth = frontier.pop(0)
+            if depth >= max_depth:
+                continue
+            for from_uid, relation, to_uid, _ in self.relations:
+                if relation not in allowed_relations:
+                    continue
+                if from_uid == current_uid:
+                    related_uid = to_uid
+                elif to_uid == current_uid:
+                    related_uid = from_uid
+                else:
+                    continue
+                results.append({"concept_uid": related_uid, "relation": relation, "depth": depth + 1})
+                if related_uid not in seen:
+                    seen.add(related_uid)
+                    frontier.append((related_uid, depth + 1))
+        return results
 
 
 def _merge_alias_lists(existing: list[str], incoming: list[str]) -> list[str]:

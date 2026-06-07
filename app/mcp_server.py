@@ -83,6 +83,32 @@ class MCPBackendProtocol(Protocol):
 
     async def get_neighborhood(self, *, concept: str, depth: int = 1) -> dict[str, Any]: ...
 
+    async def get_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        domain: str | None = None,
+        concept_uids: list[str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def update_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        evaluations: list[dict[str, Any]],
+        session_closed_at: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def get_pedagogical_session_view(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        concept_uids: list[str] | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]: ...
+
     async def check_ready(self) -> tuple[bool, dict[str, Any]]: ...
 
     async def close(self) -> None: ...
@@ -98,7 +124,7 @@ def create_mcp_server(
 
     mcp = FastMCP(
         "knowledge-graph-mcp",
-        instructions="Knowledge graph semantico con siete tools de ingesta, busqueda, contexto recuperado, contexto estricto para tutor y vecindad.",
+        instructions="Knowledge graph semantico con tools de ingesta, busqueda, contexto recuperado, tutor, vecindad y contexto pedagogico persistente del usuario.",
         host="0.0.0.0",
         stateless_http=True,
         json_response=True,
@@ -228,6 +254,58 @@ def create_mcp_server(
         """Fetch the graph neighborhood for a concept."""
         try:
             return await backend.get_neighborhood(concept=concept, depth=depth)
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="get_pedagogical_context")
+    async def get_pedagogical_context(
+        user_id: Annotated[str, Field(min_length=1)],
+        domain: str | None = None,
+        concept_uids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch persisted pedagogical context for a user."""
+        try:
+            return await backend.get_pedagogical_context(
+                user_id=user_id,
+                domain=domain,
+                concept_uids=concept_uids,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="update_pedagogical_context")
+    async def update_pedagogical_context(
+        user_id: Annotated[str, Field(min_length=1)],
+        evaluations: list[dict[str, Any]],
+        domain_hint: str | None = None,
+        session_closed_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply formal evaluation results to the persisted pedagogical context."""
+        try:
+            return await backend.update_pedagogical_context(
+                user_id=user_id,
+                domain_hint=domain_hint,
+                evaluations=evaluations,
+                session_closed_at=session_closed_at,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="get_pedagogical_session_view")
+    async def get_pedagogical_session_view(
+        user_id: Annotated[str, Field(min_length=1)],
+        domain_hint: str | None = None,
+        concept_uids: list[str] | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Build the operational pedagogical session view for a user."""
+        try:
+            return await backend.get_pedagogical_session_view(
+                user_id=user_id,
+                domain_hint=domain_hint,
+                concept_uids=concept_uids,
+                query=query,
+            )
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 

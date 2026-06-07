@@ -213,6 +213,141 @@ class TutorContextResponse(BaseModel):
     failure_reason: str | None = None
 
 
+PedagogicalMasteryLabel = Literal["muy bajo", "bajo", "medio", "alto", "muy alto"]
+PedagogicalTrendLabel = Literal["improving", "stable", "declining", "insufficient_data"]
+PedagogicalStatus = Literal["ok", "sparse", "not_found"]
+
+PEDAGOGICAL_RELATIONS = {"PREREQUISITE_FOR", "PART_OF", "IS_A"}
+
+
+class PedagogicalRecentStats(BaseModel):
+    recent_average: float = Field(ge=0.0, le=100.0)
+    trend: PedagogicalTrendLabel
+    deviation: float = Field(ge=0.0)
+    last_evaluated_at: str | None = None
+
+
+class PedagogicalRecalculationTrace(BaseModel):
+    kind: str
+    message: str
+    concept_uid: str | None = None
+    related_concept_uid: str | None = None
+    domain: str | None = None
+
+
+class PedagogicalEvaluationEvent(BaseModel):
+    user_id: str = Field(min_length=1)
+    concept_uid: str = Field(min_length=1)
+    concept_name: str = ""
+    domain: str = Field(min_length=1)
+    score_0_to_100: float = Field(ge=0.0, le=100.0)
+    recorded_at: str
+    source: Literal["formal_evaluation"] = "formal_evaluation"
+
+
+class PedagogicalConceptState(BaseModel):
+    user_id: str = Field(min_length=1)
+    concept_uid: str = Field(min_length=1)
+    concept_name: str = ""
+    domain: str = Field(min_length=1)
+    mastery_score_0_to_100: float = Field(ge=0.0, le=100.0)
+    mastery_label: PedagogicalMasteryLabel
+    recent_history: list[PedagogicalEvaluationEvent] = Field(default_factory=list, max_length=5)
+    recent_stats: PedagogicalRecentStats
+    weaknesses: list[str] = Field(default_factory=list)
+    detected_gaps: list[str] = Field(default_factory=list)
+    suggested_questions: list[str] = Field(default_factory=list)
+    effective_depth_used: int = Field(default=3, ge=1, le=10)
+    last_evaluated_at: str | None = None
+    updated_at: str
+    recalculation_traces: list[PedagogicalRecalculationTrace] = Field(default_factory=list)
+
+
+class PedagogicalDomainState(BaseModel):
+    user_id: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    mastery_score_0_to_100: float = Field(ge=0.0, le=100.0)
+    mastery_label: PedagogicalMasteryLabel
+    concept_count: int = Field(ge=0)
+    weak_concept_uids: list[str] = Field(default_factory=list)
+    recent_stats: PedagogicalRecentStats
+    updated_at: str
+    recalculation_traces: list[PedagogicalRecalculationTrace] = Field(default_factory=list)
+
+
+class PedagogicalContextSnapshot(BaseModel):
+    user_id: str = Field(min_length=1)
+    status: PedagogicalStatus
+    concepts: list[PedagogicalConceptState] = Field(default_factory=list)
+    domains: list[PedagogicalDomainState] = Field(default_factory=list)
+    recent_evaluations: list[PedagogicalEvaluationEvent] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GetPedagogicalContextRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    domain: str | None = None
+    concept_uids: list[str] = Field(default_factory=list)
+
+
+class GetPedagogicalContextResponse(PedagogicalContextSnapshot):
+    pass
+
+
+class PedagogicalEvaluationInput(BaseModel):
+    concept_uid: str = Field(min_length=1)
+    score_0_to_100: float = Field(ge=0.0, le=100.0)
+    recorded_at: str | None = None
+
+
+class UpdatePedagogicalContextRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    domain_hint: str | None = None
+    evaluations: list[PedagogicalEvaluationInput] = Field(min_length=1)
+    session_closed_at: str | None = None
+
+
+class PedagogicalSessionFocusItem(BaseModel):
+    concept_uid: str
+    concept_name: str = ""
+    domain: str
+    mastery_score_0_to_100: float = Field(ge=0.0, le=100.0)
+    mastery_label: PedagogicalMasteryLabel
+    reason: str
+
+
+class PedagogicalSessionView(BaseModel):
+    user_id: str = Field(min_length=1)
+    status: PedagogicalStatus
+    summary: str
+    weak_concepts: list[PedagogicalSessionFocusItem] = Field(default_factory=list)
+    detected_gaps: list[str] = Field(default_factory=list)
+    suggested_questions: list[str] = Field(default_factory=list)
+    effective_depth_used: int = Field(default=3, ge=1, le=10)
+    domain_focus: list[str] = Field(default_factory=list)
+    recalculation_traces: list[PedagogicalRecalculationTrace] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PedagogicalSessionViewRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    domain_hint: str | None = None
+    concept_uids: list[str] = Field(default_factory=list)
+    query: str | None = Field(default=None, min_length=1)
+
+
+class PedagogicalSessionViewResponse(PedagogicalSessionView):
+    pass
+
+
+class UpdatePedagogicalContextResponse(BaseModel):
+    user_id: str = Field(min_length=1)
+    status: PedagogicalStatus
+    context: PedagogicalContextSnapshot
+    session_view: PedagogicalSessionView
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AgentToolDebug(BaseModel):
     retrieval_status: Literal["ok", "sparse", "no_match"]
     used_neighborhood: bool = False

@@ -10,6 +10,8 @@ def test_health_live_is_public(client):
 def test_business_endpoints_require_api_key(client):
     response = client.post("/v1/search/candidates", json={"query": "test"})
     assert response.status_code == 401
+    pedagogical = client.post("/v1/pedagogical/context", json={"user_id": "test-user"})
+    assert pedagogical.status_code == 401
 
 
 def test_concept_upsert_and_alias_search(client, auth_headers):

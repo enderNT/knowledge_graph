@@ -141,6 +141,57 @@ class MCPBackendClient:
             },
         )
 
+    async def get_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        domain: str | None = None,
+        concept_uids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/pedagogical/context",
+            json={"user_id": user_id, "domain": domain, "concept_uids": concept_uids or []},
+        )
+
+    async def update_pedagogical_context(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        evaluations: list[dict[str, Any]],
+        session_closed_at: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/pedagogical/update-from-evaluation",
+            json={
+                "user_id": user_id,
+                "domain_hint": domain_hint,
+                "evaluations": evaluations,
+                "session_closed_at": session_closed_at,
+            },
+        )
+
+    async def get_pedagogical_session_view(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        concept_uids: list[str] | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/pedagogical/session-view",
+            json={
+                "user_id": user_id,
+                "domain_hint": domain_hint,
+                "concept_uids": concept_uids or [],
+                "query": query,
+            },
+        )
+
     async def upsert_concept(
         self,
         *,

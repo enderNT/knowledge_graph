@@ -26,7 +26,12 @@ EDGE_TYPES = [
     "ALIAS_OF",
 ]
 
-DOCUMENT_TYPES = ["IngestionJob"]
+DOCUMENT_TYPES = [
+    "IngestionJob",
+    "UserConceptMastery",
+    "UserDomainMastery",
+    "UserEvaluationEvent",
+]
 
 
 def build_schema_commands(settings: Settings) -> list[str]:
@@ -82,6 +87,38 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE PROPERTY IngestionJob.error IF NOT EXISTS STRING",
             "CREATE PROPERTY IngestionJob.created_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY IngestionJob.updated_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY UserConceptMastery.user_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.concept_uid IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.concept_name IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.domain IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.mastery_score_0_to_100 IF NOT EXISTS DOUBLE",
+            "CREATE PROPERTY UserConceptMastery.mastery_label IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.recent_history_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.recent_stats_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.weaknesses_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.detected_gaps_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.suggested_questions_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserConceptMastery.effective_depth_used IF NOT EXISTS INTEGER",
+            "CREATE PROPERTY UserConceptMastery.last_evaluated_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY UserConceptMastery.updated_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY UserConceptMastery.recalculation_traces_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserDomainMastery.user_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserDomainMastery.domain IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserDomainMastery.mastery_score_0_to_100 IF NOT EXISTS DOUBLE",
+            "CREATE PROPERTY UserDomainMastery.mastery_label IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserDomainMastery.concept_count IF NOT EXISTS INTEGER",
+            "CREATE PROPERTY UserDomainMastery.weak_concept_uids_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserDomainMastery.recent_stats_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserDomainMastery.updated_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY UserDomainMastery.recalculation_traces_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserEvaluationEvent.uid IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserEvaluationEvent.user_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserEvaluationEvent.concept_uid IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserEvaluationEvent.concept_name IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserEvaluationEvent.domain IF NOT EXISTS STRING",
+            "CREATE PROPERTY UserEvaluationEvent.score_0_to_100 IF NOT EXISTS DOUBLE",
+            "CREATE PROPERTY UserEvaluationEvent.recorded_at IF NOT EXISTS DATETIME",
+            "CREATE PROPERTY UserEvaluationEvent.source IF NOT EXISTS STRING",
         ]
     )
 
@@ -106,6 +143,18 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE INDEX IF NOT EXISTS ON Alias (value) FULL_TEXT",
             "CREATE INDEX IF NOT EXISTS ON IngestionJob (uid) UNIQUE",
             "CREATE INDEX IF NOT EXISTS ON IngestionJob (episode_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserConceptMastery (user_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserConceptMastery (concept_uid) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserConceptMastery (domain) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserConceptMastery (updated_at) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserDomainMastery (user_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserDomainMastery (domain) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserDomainMastery (updated_at) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (uid) UNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (user_id) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (concept_uid) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (domain) NOTUNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON UserEvaluationEvent (recorded_at) NOTUNIQUE",
             (
                 "CREATE INDEX IF NOT EXISTS ON Concept (embedding) LSM_VECTOR "
                 f"METADATA {{dimensions: {settings.embedding_dimensions}, similarity: 'COSINE'}}"
