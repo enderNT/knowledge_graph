@@ -16,9 +16,13 @@ class FakeKnowledgeBackendClient:
     def __init__(self) -> None:
         self.ready = (True, {"status": "ready"})
         self.last_link_call: dict[str, Any] | None = None
+        self.last_start_adaptive_payload: dict[str, Any] | None = None
 
     async def ingest_fragment_and_wait(self, **_: Any) -> dict[str, Any]:
         return {"status": "completed", "episode_id": "ep_1", "job_id": "job_1", "result": {"episode_id": "ep_1"}}
+
+    async def reset_knowledge_base(self) -> dict[str, Any]:
+        return {"status": "reset", "scope": "all", "database_reset": True, "queue_cleared_count": 0}
 
     async def search_candidates(self, **kwargs: Any) -> dict[str, Any]:
         return {"query": kwargs["query"], "results": []}
@@ -404,6 +408,7 @@ class FakeKnowledgeBackendClient:
         }
 
     async def start_adaptive_session(self, **kwargs: Any) -> dict[str, Any]:
+        self.last_start_adaptive_payload = dict(kwargs)
         tutor_context = await self.get_tutor_context(
             query=kwargs.get("query"),
             episode_id=kwargs.get("episode_id"),
@@ -446,6 +451,7 @@ class FakeKnowledgeBackendClient:
             "session": {
                 "session_id": "ads_1",
                 "user_id": kwargs["user_id"],
+                "study_mode": kwargs.get("study_mode", "hybrid"),
                 "resolved_reference": tutor_context["resolved_reference"],
                 "domain_hint": kwargs.get("domain_hint"),
                 "language": kwargs.get("language", "es"),
@@ -625,7 +631,7 @@ async def client_session(
 
 
 @pytest.mark.anyio
-async def test_agent_mcp_exposes_exactly_twenty_three_tools(client_session):
+async def test_agent_mcp_exposes_exactly_twenty_four_tools(client_session):
     tools = await client_session.list_tools()
     assert sorted(tool.name for tool in tools.tools) == [
         "evaluate_answer",
@@ -641,6 +647,7 @@ async def test_agent_mcp_exposes_exactly_twenty_three_tools(client_session):
         "kg_get_pedagogical_session_view",
         "kg_get_tutor_context",
         "kg_link_concepts",
+        "kg_reset_knowledge_base",
         "kg_search_candidates",
         "kg_sr_apply_relief",
         "kg_sr_get_due_items",
@@ -660,6 +667,7 @@ async def test_agent_mcp_exposes_exactly_twenty_three_tools(client_session):
     assert tool_map["kg_get_pedagogical_context"].inputSchema["properties"]["user_id"]["type"] == "string"
     assert tool_map["kg_sr_get_state"].inputSchema["properties"]["concept_uid"]["type"] == "string"
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
+    assert tool_map["start_adaptive_session"].inputSchema["properties"]["study_mode"]["default"] == "hybrid"
     assert "from" in tool_map["kg_link_concepts"].inputSchema["properties"]
     assert tool_map["kg_upsert_concept"].inputSchema["properties"]["uid"]["type"] == "string"
 
@@ -742,6 +750,10 @@ async def test_agent_passthrough_tools_preserve_shape_and_from_alias(
     client_session,
     knowledge_backend: FakeKnowledgeBackendClient,
 ):
+    reset = await client_session.call_tool("kg_reset_knowledge_base", {})
+    assert reset.isError in {False, None}
+    assert reset.structuredContent["status"] == "reset"
+
     link = await client_session.call_tool(
         "kg_link_concepts",
         {"from": "cn_1", "relation": "RELATED_TO", "to": "cn_2"},
@@ -788,9 +800,12 @@ async def test_agent_passthrough_tools_preserve_shape_and_from_alias(
 
     adaptive_start = await client_session.call_tool(
         "start_adaptive_session",
-        {"user_id": "user-1", "query": "condicionamiento clásico"},
+        {"user_id": "user-1", "query": "condicionamiento clásico", "study_mode": "recovery"},
     )
     assert adaptive_start.structuredContent["grounding_status"] == "ok"
+    assert adaptive_start.structuredContent["session"]["study_mode"] == "recovery"
+    assert knowledge_backend.last_start_adaptive_payload is not None
+    assert knowledge_backend.last_start_adaptive_payload["study_mode"] == "recovery"
 
     adaptive_submit = await client_session.call_tool(
         "submit_adaptive_block",

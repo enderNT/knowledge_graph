@@ -65,7 +65,7 @@ class MCPBackendClient:
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
-    ) -> dict[str, Any]:
+        ) -> dict[str, Any]:
         return await self._request(
             "POST",
             "/v1/knowledge/fragments",
@@ -76,6 +76,9 @@ class MCPBackendClient:
                 "language": language,
             },
         )
+
+    async def reset_knowledge_base(self) -> dict[str, Any]:
+        return await self._request("POST", "/v1/knowledge/reset")
 
     async def create_concept(
         self,
@@ -320,6 +323,7 @@ class MCPBackendClient:
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
+        study_mode: str = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,
@@ -332,6 +336,7 @@ class MCPBackendClient:
                 "query": query,
                 "episode_id": episode_id,
                 "job_id": job_id,
+                "study_mode": study_mode,
                 "domain_hint": domain_hint,
                 "language": language,
                 "constraints": constraints or {},

@@ -31,6 +31,8 @@ class AgentUpstreamProtocol(Protocol):
         language: str = "es",
     ) -> dict[str, Any]: ...
 
+    async def reset_knowledge_base(self) -> dict[str, Any]: ...
+
     async def search_candidates(
         self,
         *,
@@ -177,6 +179,7 @@ class AgentUpstreamProtocol(Protocol):
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
+        study_mode: str = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,
@@ -302,6 +305,13 @@ def create_agent_mcp_server(
                 tags=tags,
                 language=language,
             )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_reset_knowledge_base")
+    async def kg_reset_knowledge_base() -> dict[str, Any]:
+        try:
+            return await upstream.reset_knowledge_base()
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 
@@ -572,6 +582,7 @@ def create_agent_mcp_server(
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
+        study_mode: Annotated[str, Field(pattern="^(hybrid|backlog|recovery|isolated)$")] = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,
@@ -582,6 +593,7 @@ def create_agent_mcp_server(
                 query=query,
                 episode_id=episode_id,
                 job_id=job_id,
+                study_mode=study_mode,
                 domain_hint=domain_hint,
                 language=language,
                 constraints=constraints,

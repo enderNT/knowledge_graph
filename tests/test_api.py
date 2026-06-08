@@ -193,3 +193,37 @@ def test_attach_concept_evidence_enables_tutor_context_for_curated_concept(clien
     assert body["resolved_reference"]["resolved_concept_uid"] == concept_uid
     assert body["concepts"][0]["canonical_name"] == "Punto Flotante de Precision Simple"
     assert accepted["episode_id"] in [fragment["episode_id"] for fragment in body["source_fragments"]]
+
+
+def test_reset_knowledge_base_clears_all_persisted_state(client, auth_headers):
+    created = client.post(
+        "/v1/concepts",
+        headers=auth_headers,
+        json={
+            "canonical_name": "Memoria de trabajo",
+            "aliases": ["working memory"],
+            "domain": "Psicología",
+            "description": "Sistema temporal de mantenimiento.",
+        },
+    )
+    assert created.status_code == 200
+
+    before = client.post(
+        "/v1/search/candidates",
+        headers=auth_headers,
+        json={"query": "working memory", "domain_hint": "Psicología"},
+    )
+    assert before.status_code == 200
+    assert before.json()["results"]
+
+    reset = client.post("/v1/knowledge/reset", headers=auth_headers)
+    assert reset.status_code == 200
+    assert reset.json()["status"] == "reset"
+
+    after = client.post(
+        "/v1/search/candidates",
+        headers=auth_headers,
+        json={"query": "working memory", "domain_hint": "Psicología"},
+    )
+    assert after.status_code == 200
+    assert after.json()["results"] == []

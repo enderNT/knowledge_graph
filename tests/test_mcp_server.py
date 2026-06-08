@@ -21,6 +21,7 @@ class FakeBackendClient:
             "job_id": "job_1",
             "result": {"episode_id": "ep_1", "domain": "Psicología"},
         }
+        self.reset_result = {"status": "reset", "scope": "all", "database_reset": True, "queue_cleared_count": 0}
         self.search_result = {"query": "memoria", "results": []}
         self.learning_context_result = {
             "query": "memoria",
@@ -306,6 +307,9 @@ class FakeBackendClient:
     async def ingest_fragment_and_wait(self, **_: Any) -> dict[str, Any]:
         return self.fragment_result
 
+    async def reset_knowledge_base(self) -> dict[str, Any]:
+        return self.reset_result
+
     async def search_candidates(self, **_: Any) -> dict[str, Any]:
         return self.search_result
 
@@ -419,7 +423,7 @@ async def client_session() -> AsyncGenerator[Any]:
 
 
 @pytest.mark.anyio
-async def test_mcp_server_exposes_exactly_twenty_tools(client_session):
+async def test_mcp_server_exposes_exactly_twenty_one_tools(client_session):
     tools = await client_session.list_tools()
 
     assert sorted(tool.name for tool in tools.tools) == [
@@ -437,6 +441,7 @@ async def test_mcp_server_exposes_exactly_twenty_tools(client_session):
         "get_sr_stats",
         "get_tutor_context",
         "link_concepts",
+        "reset_knowledge_base",
         "search_candidates",
         "start_adaptive_session",
         "submit_adaptive_block",
@@ -453,6 +458,7 @@ async def test_mcp_server_exposes_exactly_twenty_tools(client_session):
     assert tool_map["get_sr_state"].inputSchema["properties"]["dimension"]["type"] == "string"
     assert tool_map["get_tutor_context"].inputSchema["properties"]["include_evidence"]["default"] is True
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
+    assert tool_map["start_adaptive_session"].inputSchema["properties"]["study_mode"]["default"] == "hybrid"
     assert "from" in tool_map["link_concepts"].inputSchema["properties"]
     assert "depth" in tool_map["get_neighborhood"].inputSchema["properties"]
 
@@ -469,6 +475,10 @@ async def test_mcp_server_translates_tool_results_and_errors():
         assert fragment.isError in {False, None}
         assert fragment.structuredContent["status"] == "completed"
         assert fragment.structuredContent["job_id"] == "job_1"
+
+        reset = await session.call_tool("reset_knowledge_base", {})
+        assert reset.isError in {False, None}
+        assert reset.structuredContent["status"] == "reset"
 
         learning_context = await session.call_tool(
             "get_learning_context",
@@ -587,6 +597,7 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
         "get_sr_stats",
         "get_tutor_context",
         "link_concepts",
+        "reset_knowledge_base",
         "search_candidates",
         "start_adaptive_session",
         "submit_adaptive_block",

@@ -33,6 +33,13 @@ class AddKnowledgeFragmentAccepted(BaseModel):
     status: str
 
 
+class ResetKnowledgeBaseResponse(BaseModel):
+    status: Literal["reset"] = "reset"
+    scope: Literal["all"] = "all"
+    database_reset: bool = True
+    queue_cleared_count: int = 0
+
+
 class UpsertConceptRequest(BaseModel):
     uid: str | None = None
     canonical_name: str = Field(min_length=1)

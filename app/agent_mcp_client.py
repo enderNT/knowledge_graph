@@ -51,6 +51,7 @@ class AgentMCPUpstreamClient:
         names = sorted(tool.name for tool in tools.tools)
         expected = {
             "add_knowledge_fragment",
+            "reset_knowledge_base",
             "attach_concept_evidence",
             "create_concept",
             "search_candidates",
@@ -117,6 +118,9 @@ class AgentMCPUpstreamClient:
                 "language": language,
             },
         )
+
+    async def reset_knowledge_base(self) -> dict[str, Any]:
+        return await self.call_tool("reset_knowledge_base", {})
 
     async def search_candidates(
         self,
@@ -389,6 +393,7 @@ class AgentMCPUpstreamClient:
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
+        study_mode: str = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,
@@ -400,6 +405,7 @@ class AgentMCPUpstreamClient:
                 "query": query,
                 "episode_id": episode_id,
                 "job_id": job_id,
+                "study_mode": study_mode,
                 "domain_hint": domain_hint,
                 "language": language,
                 "constraints": constraints or {},

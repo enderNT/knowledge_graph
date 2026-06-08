@@ -61,6 +61,7 @@ from app.utils import fit_embedding_dimensions
 class KnowledgeStore(Protocol):
     async def bootstrap_schema(self) -> None: ...
     async def check_ready(self) -> bool: ...
+    async def reset_all_data(self) -> None: ...
     async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str) -> EpisodeRecord: ...
     async def create_job(self, *, uid: str, episode_id: str, status: str) -> JobRecord: ...
     async def get_job(self, job_id: str) -> JobRecord | None: ...
@@ -149,6 +150,11 @@ class ArcadeKnowledgeStore:
 
     async def check_ready(self) -> bool:
         return await self.client.ready() and await self.client.database_exists()
+
+    async def reset_all_data(self) -> None:
+        if await self.client.database_exists(self.settings.arcadedb_database):
+            await self.client.server_command(f"drop database {self.settings.arcadedb_database}")
+        await ensure_database_and_schema(self.client, self.settings)
 
     async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str) -> EpisodeRecord:
         created_at = utcnow_iso()
@@ -1959,6 +1965,24 @@ class InMemoryKnowledgeStore:
 
     async def check_ready(self) -> bool:
         return True
+
+    async def reset_all_data(self) -> None:
+        self.episodes.clear()
+        self.jobs.clear()
+        self.concepts.clear()
+        self.aliases.clear()
+        self.claims.clear()
+        self.pedagogical_evidence.clear()
+        self.relations.clear()
+        self.concept_mentions.clear()
+        self.claim_support.clear()
+        self.claim_explains.clear()
+        self.user_concept_mastery.clear()
+        self.user_domain_mastery.clear()
+        self.user_evaluation_events.clear()
+        self.user_spaced_repetition.clear()
+        self.adaptive_sessions.clear()
+        self.adaptive_block_attempts.clear()
 
     async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str) -> EpisodeRecord:
         episode = EpisodeRecord(

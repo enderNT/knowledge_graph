@@ -32,6 +32,8 @@ class MCPBackendProtocol(Protocol):
         language: str = "es",
     ) -> dict[str, Any]: ...
 
+    async def reset_knowledge_base(self) -> dict[str, Any]: ...
+
     async def search_candidates(
         self,
         *,
@@ -178,6 +180,7 @@ class MCPBackendProtocol(Protocol):
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
+        study_mode: str = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,
@@ -234,6 +237,14 @@ def create_mcp_server(
                 tags=tags,
                 language=language,
             )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="reset_knowledge_base")
+    async def reset_knowledge_base() -> dict[str, Any]:
+        """Completely reset the stored graph, pedagogical state, sessions and queued ingestion payloads."""
+        try:
+            return await backend.reset_knowledge_base()
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 
@@ -520,6 +531,7 @@ def create_mcp_server(
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
+        study_mode: Annotated[str, Field(pattern="^(hybrid|backlog|recovery|isolated)$")] = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,
@@ -531,6 +543,7 @@ def create_mcp_server(
                 query=query,
                 episode_id=episode_id,
                 job_id=job_id,
+                study_mode=study_mode,
                 domain_hint=domain_hint,
                 language=language,
                 constraints=constraints,

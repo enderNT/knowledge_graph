@@ -243,6 +243,23 @@ async def test_attach_concept_evidence_request_shape():
 
 
 @pytest.mark.anyio
+async def test_reset_knowledge_base_request_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/knowledge/reset"
+        return _response(request, 200, {"status": "reset", "scope": "all", "database_reset": True, "queue_cleared_count": 2})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.reset_knowledge_base()
+    finally:
+        await client.close()
+
+    assert result["status"] == "reset"
+    assert result["queue_cleared_count"] == 2
+
+
+@pytest.mark.anyio
 async def test_upsert_concept_sends_optional_uid():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "PUT"
@@ -315,6 +332,37 @@ async def test_tutor_context_request_and_response_shape():
 
     assert result["status"] == "failed"
     assert result["failure_reason"] == "insufficient_traceable_evidence"
+
+
+@pytest.mark.anyio
+async def test_start_adaptive_session_includes_study_mode():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/adaptive/sessions/start"
+        assert json.loads(request.content.decode()) == {
+            "user_id": "user-1",
+            "query": "memoria",
+            "episode_id": None,
+            "job_id": None,
+            "study_mode": "recovery",
+            "domain_hint": "Psicología",
+            "language": "es",
+            "constraints": {"max_blocks": 2},
+        }
+        return _response(request, 200, {"session": {"session_id": "ads_1"}, "current_block": {"block_id": "blk_1"}, "planner_explanation": "x", "grounding_status": "ok"})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.start_adaptive_session(
+            user_id="user-1",
+            query="memoria",
+            study_mode="recovery",
+            domain_hint="Psicología",
+            constraints={"max_blocks": 2},
+        )
+    finally:
+        await client.close()
+
+    assert result["grounding_status"] == "ok"
 
 
 @pytest.mark.anyio
