@@ -55,10 +55,23 @@ def _seed_claim_and_episode(store, provider, *, claim_text: str, concept_uids: l
             confidence=0.92,
             status="approved",
             embedding=await provider.embed(claim_text),
+            supporting_quote=claim_text,
         )
         for concept_uid in concept_uids:
             await store.link_claim_to_concept(claim.uid, concept_uid, confidence=0.92)
             await store.link_concept_to_episode(concept_uid, episode.uid, confidence=0.92)
+            concept = await store.get_concept(concept_uid)
+            if concept is not None:
+                await store.create_pedagogical_evidence(
+                    concept_uid=concept_uid,
+                    concept_name=concept.canonical_name,
+                    episode_id=episode.uid,
+                    source_claim_uid=claim.uid,
+                    statement=claim_text,
+                    supporting_quote=claim_text,
+                    kind="claim",
+                    status="approved",
+                )
         await store.link_claim_to_episode(claim.uid, episode.uid, confidence=0.92)
         return episode, claim
 

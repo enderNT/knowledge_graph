@@ -373,6 +373,7 @@ class TutorContextBuilder:
             relations=bundle.relations,
             source_fragments=bundle.source_fragments,
             evidence=evidence,
+            pedagogical_evidence=bundle.pedagogical_evidence,
             warnings=[],
             failure_reason=None,
         )
@@ -391,19 +392,20 @@ class TutorContextBuilder:
             relations=[],
             source_fragments=[],
             evidence=[],
+            pedagogical_evidence=[],
             warnings=warnings,
             failure_reason=failure_reason,
         )
 
     def _has_traceable_evidence(self, bundle, evidence) -> bool:
-        return bool(bundle.source_fragments and evidence and (bundle.claims or bundle.relations))
+        return bool(bundle.source_fragments and evidence and bundle.pedagogical_evidence)
 
     def _sufficiency_warnings(self, bundle, evidence) -> list[str]:
         warnings: list[str] = []
         if not bundle.source_fragments:
             warnings.append("no_source_fragments")
-        if not bundle.claims:
-            warnings.append("no_traceable_claims")
+        if not bundle.pedagogical_evidence:
+            warnings.append("no_pedagogical_evidence")
         if not evidence:
             warnings.append("no_evidence_links")
         return warnings or ["insufficient_traceable_evidence"]

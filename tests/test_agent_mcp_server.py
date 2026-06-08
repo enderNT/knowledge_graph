@@ -110,14 +110,14 @@ class FakeKnowledgeBackendClient:
         }
 
     async def get_tutor_context(self, **kwargs: Any) -> dict[str, Any]:
-        if kwargs.get("episode_id") == "ep_sin_evidencia":
+        if kwargs.get("episode_id") == "ep_sin_evidencia" or kwargs.get("query") == "tema inexistente":
             return {
                 "resolved_reference": {
-                    "input_type": "episode_id",
-                    "input_value": "ep_sin_evidencia",
+                    "input_type": "query" if kwargs.get("query") else "episode_id",
+                    "input_value": kwargs.get("query") or "ep_sin_evidencia",
                     "resolved_concept_uid": None,
                     "resolved_concept_name": None,
-                    "resolved_episode_id": "ep_sin_evidencia",
+                    "resolved_episode_id": "ep_sin_evidencia" if kwargs.get("episode_id") else None,
                     "resolved_job_id": None,
                     "resolution_reason": None,
                 },
@@ -127,8 +127,66 @@ class FakeKnowledgeBackendClient:
                 "relations": [],
                 "source_fragments": [],
                 "evidence": [],
-                "warnings": ["no_traceable_claims"],
+                "pedagogical_evidence": [],
+                "warnings": ["no_pedagogical_evidence"],
                 "failure_reason": "insufficient_traceable_evidence",
+            }
+        if kwargs.get("query") == "memoria":
+            return {
+                "resolved_reference": {
+                    "input_type": "query",
+                    "input_value": "memoria",
+                    "resolved_concept_uid": "cn_mem_1",
+                    "resolved_concept_name": "Memoria episódica",
+                    "resolved_episode_id": "ep_mem_1",
+                    "resolved_job_id": None,
+                    "resolution_reason": "alias",
+                },
+                "status": "ok",
+                "concepts": [
+                    {
+                        "uid": "cn_mem_1",
+                        "canonical_name": "Memoria episódica",
+                        "domain": "Psicología",
+                        "description": "Sistema de memoria autobiográfica con contexto temporal.",
+                        "aliases": [],
+                    }
+                ],
+                "claims": [
+                    {
+                        "uid": "cl_mem_1",
+                        "text": "La memoria episódica recupera experiencias personales con contexto temporal.",
+                        "confidence": 0.93,
+                        "evidence_episode_ids": ["ep_mem_1"],
+                    }
+                ],
+                "relations": [],
+                "source_fragments": [
+                    {
+                        "episode_id": "ep_mem_1",
+                        "text": "La memoria episódica recupera experiencias personales con contexto temporal.",
+                        "status": "processed",
+                        "source_type": "manual_input",
+                        "tags": ["Psicología"],
+                        "language": "es",
+                    }
+                ],
+                "evidence": [{"subject_type": "claim", "subject_uid": "cl_mem_1", "episode_id": "ep_mem_1"}],
+                "pedagogical_evidence": [
+                    {
+                        "uid": "pev_mem_1",
+                        "concept_uid": "cn_mem_1",
+                        "concept_name": "Memoria episódica",
+                        "episode_id": "ep_mem_1",
+                        "source_claim_uid": "cl_mem_1",
+                        "statement": "La memoria episódica recupera experiencias personales con contexto temporal.",
+                        "supporting_quote": "La memoria episódica recupera experiencias personales con contexto temporal.",
+                        "kind": "claim",
+                        "status": "approved",
+                    }
+                ],
+                "warnings": [],
+                "failure_reason": None,
             }
         return {
             "resolved_reference": {
@@ -183,6 +241,19 @@ class FakeKnowledgeBackendClient:
             "evidence": [
                 {"subject_type": "claim", "subject_uid": "cl_1", "episode_id": "ep_1"},
                 {"subject_type": "relation", "subject_uid": "cn_1|CONTRASTS_WITH|cn_2|ep_1", "episode_id": "ep_1"},
+            ],
+            "pedagogical_evidence": [
+                {
+                    "uid": "pev_1",
+                    "concept_uid": "cn_1",
+                    "concept_name": "Condicionamiento clásico",
+                    "episode_id": "ep_1",
+                    "source_claim_uid": "cl_1",
+                    "statement": "El condicionamiento clásico asocia un estímulo condicionado con uno incondicionado.",
+                    "supporting_quote": "El condicionamiento clásico asocia un estímulo condicionado con uno incondicionado.",
+                    "kind": "claim",
+                    "status": "approved",
+                }
             ],
             "warnings": [],
             "failure_reason": None,
@@ -604,14 +675,13 @@ async def test_agent_high_level_tools_cover_ok_sparse_and_no_match(client_sessio
     assert explain_ok.structuredContent["source_concept_uids"] == ["cn_1"]
     assert explain_ok.structuredContent["debug"]["generation_mode"] in {"stub", "structured_llm"}
 
-    explain_sparse = await client_session.call_tool(
+    explain_memory = await client_session.call_tool(
         "explain_topic",
         {"query": "memoria", "domain_hint": "Psicología"},
     )
-    assert explain_sparse.isError in {False, None}
-    assert explain_sparse.structuredContent["status"] == "sparse"
-    assert explain_sparse.structuredContent["debug"]["used_neighborhood"] is True
-    assert "no_source_episodes" in explain_sparse.structuredContent["warnings"]
+    assert explain_memory.isError in {False, None}
+    assert explain_memory.structuredContent["status"] == "ok"
+    assert explain_memory.structuredContent["source_concept_uids"] == ["cn_mem_1"]
 
     quiz = await client_session.call_tool(
         "generate_quiz",
@@ -627,7 +697,7 @@ async def test_agent_high_level_tools_cover_ok_sparse_and_no_match(client_sessio
         {"query": "tema inexistente", "domain_hint": "Psicología"},
     )
     assert no_match.isError in {False, None}
-    assert no_match.structuredContent["status"] == "no_match"
+    assert no_match.structuredContent["status"] == "blocked"
     assert no_match.structuredContent["questions"] == []
 
 

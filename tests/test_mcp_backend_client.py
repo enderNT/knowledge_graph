@@ -301,7 +301,8 @@ async def test_tutor_context_request_and_response_shape():
                 "relations": [],
                 "source_fragments": [],
                 "evidence": [],
-                "warnings": ["no_traceable_claims"],
+                "pedagogical_evidence": [],
+                "warnings": ["no_pedagogical_evidence"],
                 "failure_reason": "insufficient_traceable_evidence",
             },
         )

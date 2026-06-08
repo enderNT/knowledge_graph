@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.schemas import ExtractionResult
+from app.schemas import ExtractionResult, PedagogicalEvidenceDecision
 from app.utils import dedupe_preserve_order, fit_embedding_dimensions, normalize_text, stable_embedding
 
 
@@ -86,6 +86,17 @@ class AIProvider(ABC):
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
         raise NotImplementedError
 
+    @abstractmethod
+    async def vet_pedagogical_evidence(
+        self,
+        *,
+        concept_name: str,
+        claim_text: str,
+        supporting_quote: str,
+        language: str,
+    ) -> PedagogicalEvidenceDecision:
+        raise NotImplementedError
+
 
 class StubAIProvider(AIProvider):
     def __init__(self, settings: Settings) -> None:
@@ -126,6 +137,32 @@ class StubAIProvider(AIProvider):
             text,
             tags,
             augment_from_heuristics=True,
+        )
+
+    async def vet_pedagogical_evidence(
+        self,
+        *,
+        concept_name: str,
+        claim_text: str,
+        supporting_quote: str,
+        language: str,
+    ) -> PedagogicalEvidenceDecision:
+        _ = (concept_name, language)
+        statement = " ".join(claim_text.split()).strip(" .")
+        quote = " ".join(supporting_quote.split()).strip()
+        if not statement or not quote:
+            return PedagogicalEvidenceDecision(
+                statement=statement or claim_text,
+                supporting_quote=quote or supporting_quote,
+                status="rejected",
+                review_notes=["empty_statement_or_supporting_quote"],
+            )
+        return PedagogicalEvidenceDecision(
+            statement=statement,
+            supporting_quote=quote,
+            kind="claim",
+            status="approved",
+            review_notes=[],
         )
 
     def refine_extraction(
@@ -643,6 +680,10 @@ class OpenAICompatibleProvider(AIProvider):
             "You are responsible for semantic validation: only keep concepts that are meaningful, canonical, and useful as standalone graph nodes. "
             "Do not emit partial fragments, isolated adjectives, or incomplete headings as concepts. "
             "Use tags only to infer domain/topics, not as concepts unless the text explicitly mentions them. "
+            "Treat editorial, instructional, navigational, formatting, or meta content as non-concepts unless the topic really is that content. "
+            "Examples of content that should usually be excluded as concepts or claims: introductions to a manual, directions to the reader, labels like period/date/section, "
+            "formatting scaffolds, document navigation, references to prompts, system behavior, retrieval, evidence, fragments, grounding, or internal workflow. "
+            "When a phrase is too weak, generic, tabular, or incomplete to stand alone as a useful node, discard it instead of inventing or stretching it. "
             "Concept items must include canonical_name, aliases, description, evidence_quotes, confidence. "
             "Each concept must include 1 to 3 short evidence_quotes copied verbatim from the text. "
             "Claim items must include text, confidence, explains, supporting_quote. "
@@ -676,6 +717,65 @@ class OpenAICompatibleProvider(AIProvider):
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
             raise ValueError(f"llm extraction failed: {message}") from exc
+
+    async def vet_pedagogical_evidence(
+        self,
+        *,
+        concept_name: str,
+        claim_text: str,
+        supporting_quote: str,
+        language: str,
+    ) -> PedagogicalEvidenceDecision:
+        system_prompt = (
+            "You are the pedagogical evidence distiller and judge for a grounded learning system. "
+            "Return only JSON with keys: statement, supporting_quote, kind, status, review_notes. "
+            "Your job is to convert a claim plus its source quote into one student-safe pedagogical evidence unit, or reject it. "
+            "Use only the provided claim and quote. Do not invent facts. "
+            "If the claim is valid but awkward, rewrite it into a clean, self-contained declarative statement about the concept. "
+            "Reject content that is editorial, navigational, procedural, formatting-only, document-scaffolding, or internal meta-language unless that is literally the topic. "
+            "Examples to usually reject: introductions to a guide/manual, notes to the reader, section labels, reminders about evidence/retrieval/fragments/grounding/prompts/system/process. "
+            "Reject weak or non-teachable units such as incomplete headings, isolated labels, raw formatting artifacts, or statements that are not useful to teach the concept. "
+            "Approve only if the result is atomic, teachable, grounded in the quote, and appropriate to show to a learner. "
+            "If you reject, keep statement close to the best candidate and explain why in review_notes. "
+            "Preserve supporting_quote verbatim except for whitespace normalization."
+        )
+        user_prompt = {
+            "language": language,
+            "concept_name": concept_name,
+            "claim_text": claim_text,
+            "supporting_quote": supporting_quote,
+        }
+        try:
+            response = await self.client.post(
+                "chat/completions",
+                json={
+                    "model": self.settings.openai_chat_model,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=True)},
+                    ],
+                    "temperature": 0.1,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
+            decision = PedagogicalEvidenceDecision.model_validate(json.loads(content))
+            statement = " ".join(decision.statement.split()).strip(" .")
+            quote = " ".join(decision.supporting_quote.split()).strip()
+            if not statement or not quote:
+                return PedagogicalEvidenceDecision(
+                    statement=statement or claim_text.strip(),
+                    supporting_quote=quote or supporting_quote.strip(),
+                    kind=decision.kind,
+                    status="rejected",
+                    review_notes=[*decision.review_notes, "empty_statement_or_supporting_quote"],
+                )
+            return decision.model_copy(update={"statement": statement, "supporting_quote": quote})
+        except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            raise ValueError(f"llm pedagogical evidence vetting failed: {message}") from exc
 
     def _sanitize_llm_extraction(self, result: ExtractionResult, text: str, tags: list[str]) -> ExtractionResult:
         domain = tags[0].strip().title() if tags else (result.domain.strip() or "General")

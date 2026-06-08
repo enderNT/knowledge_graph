@@ -87,6 +87,19 @@ class FakeBackendClient:
                 }
             ],
             "evidence": [{"subject_type": "claim", "subject_uid": "cl_1", "episode_id": "ep_1"}],
+            "pedagogical_evidence": [
+                {
+                    "uid": "pev_1",
+                    "concept_uid": "cn_1",
+                    "concept_name": "Memoria episódica",
+                    "episode_id": "ep_1",
+                    "source_claim_uid": "cl_1",
+                    "statement": "La memoria episódica recupera experiencias personales con contexto temporal.",
+                    "supporting_quote": "La memoria episódica recupera experiencias personales con contexto temporal.",
+                    "kind": "claim",
+                    "status": "approved",
+                }
+            ],
             "warnings": [],
             "failure_reason": None,
         }

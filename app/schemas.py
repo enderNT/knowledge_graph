@@ -214,12 +214,40 @@ class TutorContextEvidence(BaseModel):
     episode_id: str
 
 
+class PedagogicalEvidenceRecord(BaseModel):
+    uid: str
+    concept_uid: str
+    concept_name: str
+    episode_id: str
+    source_claim_uid: str
+    statement: str
+    supporting_quote: str
+    kind: Literal["claim", "definition", "relationship"]
+    status: Literal["approved", "rejected", "repairable"]
+    review_notes_json: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class TutorContextPedagogicalEvidence(BaseModel):
+    uid: str
+    concept_uid: str
+    concept_name: str
+    episode_id: str
+    source_claim_uid: str
+    statement: str
+    supporting_quote: str
+    kind: Literal["claim", "definition", "relationship"]
+    status: Literal["approved", "rejected", "repairable"]
+
+
 class TutorContextBundle(BaseModel):
     concepts: list[TutorContextConcept] = Field(default_factory=list)
     claims: list[TutorContextClaim] = Field(default_factory=list)
     relations: list[TutorContextRelation] = Field(default_factory=list)
     source_fragments: list[TutorContextSourceFragment] = Field(default_factory=list)
     evidence: list[TutorContextEvidence] = Field(default_factory=list)
+    pedagogical_evidence: list[TutorContextPedagogicalEvidence] = Field(default_factory=list)
 
 
 class TutorContextResponse(BaseModel):
@@ -230,6 +258,7 @@ class TutorContextResponse(BaseModel):
     relations: list[TutorContextRelation] = Field(default_factory=list)
     source_fragments: list[TutorContextSourceFragment] = Field(default_factory=list)
     evidence: list[TutorContextEvidence] = Field(default_factory=list)
+    pedagogical_evidence: list[TutorContextPedagogicalEvidence] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     failure_reason: str | None = None
 
@@ -589,6 +618,10 @@ class AdaptiveBlockAnswerKey(BaseModel):
     correct_choice_indexes: list[int] = Field(default_factory=list)
     boolean_answer: bool | None = None
     rationale: str = ""
+    evidence_unit_ids: list[str] = Field(default_factory=list)
+    grading_rubric: dict[str, Any] = Field(default_factory=dict)
+    question_contract_version: str = "pedagogical-v2"
+    validator_notes: list[str] = Field(default_factory=list)
 
 
 class AdaptiveBlockResponse(BaseModel):
@@ -726,13 +759,14 @@ class AgentToolDebug(BaseModel):
 class ExplainTopicResponse(BaseModel):
     query: str
     domain_hint: str | None = None
-    status: Literal["ok", "sparse", "no_match"]
+    status: Literal["ok", "sparse", "no_match", "blocked"]
     explanation_markdown: str
     key_points: list[str] = Field(default_factory=list)
     examples: list[str] = Field(default_factory=list)
     source_concept_uids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     debug: AgentToolDebug
+    failure_reason: str | None = None
 
 
 class QuizQuestion(BaseModel):
@@ -746,22 +780,27 @@ class QuizAnswerKeyItem(BaseModel):
     question_id: str
     correct_answer: str
     rationale: str
+    evidence_unit_ids: list[str] = Field(default_factory=list)
+    grading_rubric: dict[str, Any] = Field(default_factory=dict)
+    question_contract_version: str = "pedagogical-v2"
+    validator_notes: list[str] = Field(default_factory=list)
 
 
 class GenerateQuizResponse(BaseModel):
     query: str
     domain_hint: str | None = None
-    status: Literal["ok", "sparse", "no_match"]
+    status: Literal["ok", "sparse", "no_match", "blocked"]
     questions: list[QuizQuestion] = Field(default_factory=list)
     answer_key: list[QuizAnswerKeyItem] = Field(default_factory=list)
     coverage_summary: str
     warnings: list[str] = Field(default_factory=list)
     debug: AgentToolDebug
+    failure_reason: str | None = None
 
 
 class EvaluateAnswerResponse(BaseModel):
     query: str
-    status: Literal["ok", "sparse", "no_match"]
+    status: Literal["ok", "sparse", "no_match", "blocked"]
     verdict: Literal["correct", "partial", "incorrect", "unsupported"]
     score_0_to_1: float = Field(ge=0.0, le=1.0)
     feedback_markdown: str
@@ -769,6 +808,7 @@ class EvaluateAnswerResponse(BaseModel):
     missing_points: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     debug: AgentToolDebug
+    failure_reason: str | None = None
 
 
 class EpisodeResponse(BaseModel):
@@ -872,6 +912,14 @@ class ExtractionResult(BaseModel):
     relations: list[ExtractedRelation] = Field(default_factory=list)
 
 
+class PedagogicalEvidenceDecision(BaseModel):
+    statement: str
+    supporting_quote: str
+    kind: Literal["claim", "definition", "relationship"] = "claim"
+    status: Literal["approved", "rejected", "repairable"] = "approved"
+    review_notes: list[str] = Field(default_factory=list)
+
+
 class ConceptRecord(BaseModel):
     uid: str
     canonical_name: str
@@ -903,6 +951,7 @@ class ClaimRecord(BaseModel):
     status: str
     created_at: str
     embedding: list[float] = Field(default_factory=list)
+    supporting_quote: str | None = None
 
 
 class JobRecord(BaseModel):

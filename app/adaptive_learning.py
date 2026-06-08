@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from app.ai_provider import AIProvider
 from app.config import Settings
 from app.learning_context import TutorContextBuilder
+from app.pedagogical_assessment import PedagogicalAssessmentService
 from app.pedagogical_context import PedagogicalContextBuilder
 from app.schemas import (
     ApplyPrereqReliefRequest,
@@ -109,6 +110,7 @@ class AdaptiveLearningService:
         self._store = store
         self._ai_provider = ai_provider
         self._sr_service = SpacedRepetitionService(settings=settings, store=store)
+        self._assessment = PedagogicalAssessmentService()
 
     async def start_session(
         self,
@@ -373,7 +375,7 @@ class AdaptiveLearningService:
         if tutor_context.status != "ok":
             raise HTTPException(
                 status_code=422,
-                detail=tutor_context.failure_reason or "adaptive session requires strict tutor context",
+                detail=tutor_context.failure_reason or "insufficient_pedagogical_evidence",
             )
         return tutor_context
 
@@ -670,20 +672,26 @@ class AdaptiveLearningService:
             planner_explanation=decision.explanation,
         )
         item_count = constraints.max_items_per_block
-        evidence = self._collect_evidence(tutor_context, concept_state.concept_uid)
+        evidence = self._assessment.select_evidence(
+            tutor_context=tutor_context,
+            concept_uid=concept_state.concept_uid,
+            limit=max(item_count, 3),
+        )
+        if not evidence:
+            raise RuntimeError("validated tutor context did not provide pedagogical evidence")
         items: list[AdaptiveBlockItem] = []
         answer_keys: list[AdaptiveBlockAnswerKey] = []
         for index in range(item_count):
             question_type = decision.question_types[index % len(decision.question_types)]
-            item, answer_key = self._build_item(
+            item, answer_key = self._assessment.build_adaptive_item(
                 item_id=f"{block_id}_item_{index + 1}",
-                concept_state=concept_state,
                 question_type=question_type,
+                concept_uid=concept_state.concept_uid,
+                concept_name=concept_state.concept_name,
                 difficulty=decision.difficulty,
                 dimension=decision.primary_dimension,
-                evidence=evidence,
-                tutor_context=tutor_context,
-                index=index,
+                unit=evidence[index % len(evidence)],
+                alternative_units=evidence,
             )
             items.append(item)
             answer_keys.append(answer_key)
@@ -693,140 +701,6 @@ class AdaptiveLearningService:
             items=items,
             answer_keys=answer_keys,
             generated_at=utcnow_iso(),
-        )
-
-    def _build_item(
-        self,
-        *,
-        item_id: str,
-        concept_state: PedagogicalConceptState,
-        question_type: AdaptiveQuestionType,
-        difficulty: AdaptiveDifficulty,
-        dimension: PedagogicalDimension,
-        evidence: list[tuple[str, str]],
-        tutor_context: TutorContextResponse,
-        index: int,
-    ) -> tuple[AdaptiveBlockItem, AdaptiveBlockAnswerKey]:
-        statement, ref_id = evidence[index % len(evidence)]
-        concept_name = concept_state.concept_name
-        if question_type == "multiple_choice_single":
-            distractors = self._single_choice_distractors(concept_name, statement, tutor_context)
-            choices = [statement, *distractors][:4]
-            return (
-                AdaptiveBlockItem(
-                    item_id=item_id,
-                    question_type=question_type,
-                    concept_uid=concept_state.concept_uid,
-                    target_dimension=dimension,
-                    difficulty=difficulty,
-                    prompt=f"¿Cuál afirmación está respaldada sobre {concept_name}?",
-                    choices=choices,
-                    rubric={"main_signal": "recognition"},
-                    grounding_refs=[ref_id],
-                ),
-                AdaptiveBlockAnswerKey(
-                    item_id=item_id,
-                    grading_mode="deterministic_choice",
-                    expected=[statement],
-                    correct_choice_indexes=[0],
-                    rationale="La opción correcta coincide con evidencia trazable del tutor context.",
-                ),
-            )
-        if question_type == "true_false":
-            correct = index % 2 == 0
-            prompt_statement = statement if correct else f"{concept_name} no guarda relación con la evidencia recuperada."
-            return (
-                AdaptiveBlockItem(
-                    item_id=item_id,
-                    question_type=question_type,
-                    concept_uid=concept_state.concept_uid,
-                    target_dimension=dimension,
-                    difficulty=difficulty,
-                    prompt=f"Verdadero o falso: {prompt_statement}",
-                    choices=["Verdadero", "Falso"],
-                    rubric={"main_signal": "recognition"},
-                    grounding_refs=[ref_id],
-                ),
-                AdaptiveBlockAnswerKey(
-                    item_id=item_id,
-                    grading_mode="deterministic_boolean",
-                    expected=[prompt_statement],
-                    boolean_answer=correct,
-                    rationale="El veredicto se basa en evidencia explícita del contexto.",
-                ),
-            )
-        if question_type == "cloze":
-            expected = self._completion_phrase(statement, concept_name)
-            return (
-                AdaptiveBlockItem(
-                    item_id=item_id,
-                    question_type=question_type,
-                    concept_uid=concept_state.concept_uid,
-                    target_dimension=dimension,
-                    difficulty=difficulty,
-                    prompt=f"Completa la idea clave sobre {concept_name}: {statement.replace(expected, '_____')}",
-                    rubric={"main_signal": "recall", "secondary_signal": "precision"},
-                    grounding_refs=[ref_id],
-                    metadata={"expected_phrase": expected},
-                ),
-                AdaptiveBlockAnswerKey(
-                    item_id=item_id,
-                    grading_mode="rules_plus_semantic",
-                    expected=[expected],
-                    rationale="Se acepta una formulación cercana si conserva el núcleo conceptual.",
-                ),
-            )
-        if question_type == "multiple_choice_multi":
-            secondary = evidence[(index + 1) % len(evidence)]
-            correct_choices = [statement, secondary[0]]
-            distractors = [
-                f"{concept_name} elimina la necesidad de evidencia trazable.",
-                f"{concept_name} significa exactamente lo opuesto a la evidencia recuperada.",
-            ]
-            choices = [*correct_choices, *distractors]
-            return (
-                AdaptiveBlockItem(
-                    item_id=item_id,
-                    question_type=question_type,
-                    concept_uid=concept_state.concept_uid,
-                    target_dimension=dimension,
-                    difficulty=difficulty,
-                    prompt=f"Selecciona todas las afirmaciones compatibles con {concept_name}.",
-                    choices=choices,
-                    rubric={"main_signal": "application", "secondary_signal": "coverage"},
-                    grounding_refs=[ref_id, secondary[1]],
-                ),
-                AdaptiveBlockAnswerKey(
-                    item_id=item_id,
-                    grading_mode="partial_multi_choice",
-                    expected=correct_choices,
-                    correct_choice_indexes=[0, 1],
-                    rationale="La puntuación distingue omisiones de falsas inclusiones.",
-                ),
-            )
-        case_text = tutor_context.source_fragments[0].text if tutor_context.source_fragments else statement
-        return (
-            AdaptiveBlockItem(
-                item_id=item_id,
-                question_type="open",
-                concept_uid=concept_state.concept_uid,
-                target_dimension=dimension,
-                difficulty=difficulty,
-                prompt=(
-                    f"Usa la evidencia recuperada para explicar {concept_name}"
-                    if dimension == "explanation"
-                    else f"Aplica {concept_name} al siguiente caso breve: {case_text}"
-                ),
-                rubric={"main_signal": dimension, "secondary_signal": "coverage"},
-                grounding_refs=[ref_id],
-                metadata={"source_case": case_text},
-            ),
-            AdaptiveBlockAnswerKey(
-                item_id=item_id,
-                grading_mode="rubric_structured",
-                expected=[statement],
-                rationale="La respuesta debe cubrir la idea central grounded sin inventar contenido.",
-            ),
         )
 
     def _evaluate_item(
@@ -860,20 +734,16 @@ class AdaptiveLearningService:
             error_signal = 1.0 if false_positive == 0 else (0.45 if false_positive == 1 else 0.15)
         else:
             learner_text = submission.response_text or ""
-            overlaps = [self._semantic_overlap(learner_text, expected) for expected in answer_key.expected]
-            coverage = max(overlaps, default=0.0)
-            precision = self._precision_signal(learner_text, answer_key.expected[0] if answer_key.expected else "")
-            base_score = max(coverage, precision * 0.9)
+            coverage, precision, base_score = self._assessment.grade_open_response(learner_text, answer_key)
             if item.question_type == "open":
                 support_signal = self._support_signal(interaction)
                 stability_signal = 1.0 if not interaction.retry_used else 0.6
-                error_signal = self._error_signal_from_overlap(coverage)
+                error_signal = 1.0 if coverage >= 0.75 else (0.45 if coverage >= 0.4 else 0.15)
                 base_score = (
-                    0.35 * coverage
+                    0.45 * coverage
                     + 0.20 * precision
                     + 0.20 * support_signal
-                    + 0.15 * error_signal
-                    + 0.10 * stability_signal
+                    + 0.15 * stability_signal
                 )
         score = self._apply_support_penalty(base_score, interaction)
         verdict = self._band_verdict(score)
@@ -1258,7 +1128,7 @@ class AdaptiveLearningService:
         elif interaction.hint_used:
             multiplier = 0.8
         elif interaction.retry_used:
-            multiplier = 0.9
+            multiplier = 0.95
         return max(0.0, min(1.0, base_score * multiplier))
 
     @staticmethod

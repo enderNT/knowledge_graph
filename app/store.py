@@ -35,6 +35,7 @@ from app.schemas import (
     PEDAGOGICAL_RELATIONS,
     DueSRItem,
     PedagogicalConceptState,
+    PedagogicalEvidenceRecord,
     PedagogicalDimensionStates,
     PedagogicalDomainState,
     PedagogicalEvaluationEvent,
@@ -45,6 +46,7 @@ from app.schemas import (
     TutorContextClaim,
     TutorContextConcept,
     TutorContextEvidence,
+    TutorContextPedagogicalEvidence,
     TutorContextRelation,
     TutorContextResolvedReference,
     TutorContextResponse,
@@ -70,6 +72,19 @@ class KnowledgeStore(Protocol):
     async def get_concept(self, ref: str) -> ConceptRecord | None: ...
     async def search_candidates(self, *, query: str, domain_hint: str | None, query_embedding: list[float] | None, limit: int) -> list[CandidateHit]: ...
     async def create_claim(self, *, text: str, confidence: float, status: str, embedding: list[float]) -> ClaimRecord: ...
+    async def create_pedagogical_evidence(
+        self,
+        *,
+        concept_uid: str,
+        concept_name: str,
+        episode_id: str,
+        source_claim_uid: str,
+        statement: str,
+        supporting_quote: str,
+        kind: str,
+        status: str,
+        review_notes_json: str | None = None,
+    ) -> PedagogicalEvidenceRecord: ...
     async def create_relation(self, *, from_ref: str, relation: str, to_ref: str, evidence_episode_id: str | None, confidence: float | None = None) -> bool: ...
     async def attach_concept_evidence(self, *, concept_ref: str, episode_id: str, link_episode_claims: bool = True) -> AttachConceptEvidenceResponse: ...
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None: ...
@@ -512,12 +527,20 @@ class ArcadeKnowledgeStore:
         results = sorted(candidates.values(), key=_candidate_sort_key, reverse=True)
         return results[:limit]
 
-    async def create_claim(self, *, text: str, confidence: float, status: str, embedding: list[float]) -> ClaimRecord:
+    async def create_claim(
+        self,
+        *,
+        text: str,
+        confidence: float,
+        status: str,
+        embedding: list[float],
+        supporting_quote: str | None = None,
+    ) -> ClaimRecord:
         embedding = await self._normalize_embedding(embedding)
         normalized_text = normalize_text(text)
         existing = await self.client.query(
             (
-                "SELECT uid, text, normalized_text, confidence, status, created_at, embedding "
+                "SELECT uid, text, normalized_text, confidence, status, created_at, embedding, supporting_quote "
                 "FROM Claim WHERE normalized_text = :normalized_text LIMIT 1"
             ),
             {"normalized_text": normalized_text},
@@ -530,7 +553,8 @@ class ArcadeKnowledgeStore:
         await self.client.command(
             (
                 "CREATE VERTEX Claim SET uid = :uid, text = :text, normalized_text = :normalized_text, "
-                "confidence = :confidence, status = :status, embedding = :embedding, created_at = :created_at"
+                "confidence = :confidence, status = :status, embedding = :embedding, supporting_quote = :supporting_quote, "
+                "created_at = :created_at"
             ),
             {
                 "uid": uid,
@@ -539,6 +563,7 @@ class ArcadeKnowledgeStore:
                 "confidence": confidence,
                 "status": status,
                 "embedding": embedding,
+                "supporting_quote": supporting_quote,
                 "created_at": created_at,
             },
         )
@@ -550,7 +575,88 @@ class ArcadeKnowledgeStore:
             status=status,
             created_at=created_at,
             embedding=embedding,
+            supporting_quote=supporting_quote,
         )
+
+    async def create_pedagogical_evidence(
+        self,
+        *,
+        concept_uid: str,
+        concept_name: str,
+        episode_id: str,
+        source_claim_uid: str,
+        statement: str,
+        supporting_quote: str,
+        kind: str,
+        status: str,
+        review_notes_json: str | None = None,
+    ) -> PedagogicalEvidenceRecord:
+        rows = await self.client.query(
+            (
+                "SELECT uid, concept_uid, concept_name, episode_id, source_claim_uid, statement, supporting_quote, "
+                "kind, status, review_notes_json, created_at, updated_at "
+                "FROM PedagogicalEvidence WHERE concept_uid = :concept_uid AND episode_id = :episode_id "
+                "AND source_claim_uid = :source_claim_uid AND statement = :statement LIMIT 1"
+            ),
+            {
+                "concept_uid": concept_uid,
+                "episode_id": episode_id,
+                "source_claim_uid": source_claim_uid,
+                "statement": statement,
+            },
+        )
+        now = utcnow_iso()
+        if rows:
+            uid = str(rows[0]["uid"])
+            await self.client.command(
+                (
+                    "UPDATE PedagogicalEvidence SET concept_name = :concept_name, supporting_quote = :supporting_quote, "
+                    "kind = :kind, status = :status, review_notes_json = :review_notes_json, updated_at = :updated_at "
+                    "WHERE uid = :uid"
+                ),
+                {
+                    "uid": uid,
+                    "concept_name": concept_name,
+                    "supporting_quote": supporting_quote,
+                    "kind": kind,
+                    "status": status,
+                    "review_notes_json": review_notes_json,
+                    "updated_at": now,
+                },
+            )
+        else:
+            uid = make_prefixed_id("pev")
+            await self.client.command(
+                (
+                    "INSERT INTO PedagogicalEvidence SET uid = :uid, concept_uid = :concept_uid, concept_name = :concept_name, "
+                    "episode_id = :episode_id, source_claim_uid = :source_claim_uid, statement = :statement, "
+                    "supporting_quote = :supporting_quote, kind = :kind, status = :status, "
+                    "review_notes_json = :review_notes_json, created_at = :created_at, updated_at = :updated_at"
+                ),
+                {
+                    "uid": uid,
+                    "concept_uid": concept_uid,
+                    "concept_name": concept_name,
+                    "episode_id": episode_id,
+                    "source_claim_uid": source_claim_uid,
+                    "statement": statement,
+                    "supporting_quote": supporting_quote,
+                    "kind": kind,
+                    "status": status,
+                    "review_notes_json": review_notes_json,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+        record_rows = await self.client.query(
+            (
+                "SELECT uid, concept_uid, concept_name, episode_id, source_claim_uid, statement, supporting_quote, "
+                "kind, status, review_notes_json, created_at, updated_at "
+                "FROM PedagogicalEvidence WHERE uid = :uid LIMIT 1"
+            ),
+            {"uid": uid},
+        )
+        return PedagogicalEvidenceRecord.model_validate(record_rows[0])
 
     async def create_relation(
         self,
@@ -598,13 +704,30 @@ class ArcadeKnowledgeStore:
                 (
                     "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
                     ".in('SUPPORTED_BY'){type: Claim, as: claim} "
-                    "RETURN claim.uid as uid"
+                    "RETURN claim.uid as uid, claim.text as text, claim.supporting_quote as supporting_quote"
                 ),
                 {"uid": episode_id},
             )
             linked_claim_uids = {str(row.get("uid") or "") for row in claim_rows if row.get("uid")}
-            for claim_uid in linked_claim_uids:
+            for row in claim_rows:
+                claim_uid = str(row.get("uid") or "")
+                if not claim_uid:
+                    continue
                 await self.link_claim_to_concept(claim_uid, concept.uid)
+                statement = str(row.get("text") or "").strip()
+                if not statement:
+                    continue
+                supporting_quote = str(row.get("supporting_quote") or statement).strip()
+                await self.create_pedagogical_evidence(
+                    concept_uid=concept.uid,
+                    concept_name=concept.canonical_name,
+                    episode_id=episode_id,
+                    source_claim_uid=claim_uid,
+                    statement=statement,
+                    supporting_quote=supporting_quote,
+                    kind="claim",
+                    status="approved",
+                )
         return AttachConceptEvidenceResponse(
             status="attached",
             concept_uid=concept.uid,
@@ -799,6 +922,10 @@ class ArcadeKnowledgeStore:
             relations=relations.values(),
             source_fragments=source_fragments,
         )
+        pedagogical_evidence = await self._get_pedagogical_evidence(
+            concept_uids=set(concepts),
+            episode_ids={episode_id},
+        )
 
         return TutorContextBundle(
             concepts=list(concepts.values()),
@@ -806,6 +933,7 @@ class ArcadeKnowledgeStore:
             relations=list(relations.values()),
             source_fragments=source_fragments,
             evidence=evidence,
+            pedagogical_evidence=pedagogical_evidence,
         )
 
     async def get_tutor_context_for_concept(self, concept_ref: str, depth: int = 1) -> TutorContextBundle | None:
@@ -897,12 +1025,17 @@ class ArcadeKnowledgeStore:
             relations=relations.values(),
             source_fragments=source_fragments.values(),
         )
+        pedagogical_evidence = await self._get_pedagogical_evidence(
+            concept_uids=set(concepts),
+            episode_ids=set(source_fragments),
+        )
         return TutorContextBundle(
             concepts=list(concepts.values()),
             claims=list(claims.values()),
             relations=list(relations.values()),
             source_fragments=list(source_fragments.values()),
             evidence=evidence,
+            pedagogical_evidence=pedagogical_evidence,
         )
 
     async def get_pedagogical_context(self, *, user_id: str) -> GetPedagogicalContextResponse:
@@ -1489,6 +1622,31 @@ class ArcadeKnowledgeStore:
                 evidence[key] = TutorContextEvidence(subject_type="relation", subject_uid=relation.uid, episode_id=episode_id)
         return list(evidence.values())
 
+    async def _get_pedagogical_evidence(
+        self,
+        *,
+        concept_uids: set[str],
+        episode_ids: set[str],
+    ) -> list[TutorContextPedagogicalEvidence]:
+        if not concept_uids:
+            return []
+        rows = await self._safe_query(
+            (
+                "SELECT uid, concept_uid, concept_name, episode_id, source_claim_uid, statement, supporting_quote, "
+                "kind, status FROM PedagogicalEvidence WHERE status = 'approved'"
+            )
+        )
+        items: list[TutorContextPedagogicalEvidence] = []
+        for row in rows:
+            concept_uid = str(row.get("concept_uid") or "")
+            episode_id = str(row.get("episode_id") or "")
+            if concept_uid not in concept_uids:
+                continue
+            if episode_ids and episode_id not in episode_ids:
+                continue
+            items.append(TutorContextPedagogicalEvidence.model_validate(row))
+        return items
+
     async def _fetch_neighborhood_edge_rows(self, concept_uid: str) -> list[dict[str, Any]]:
         outgoing = await self._safe_query(
             (
@@ -1784,6 +1942,7 @@ class InMemoryKnowledgeStore:
         self.concepts: dict[str, ConceptRecord] = {}
         self.aliases: dict[str, str] = {}
         self.claims: dict[str, ClaimRecord] = {}
+        self.pedagogical_evidence: dict[str, PedagogicalEvidenceRecord] = {}
         self.relations: set[tuple[str, str, str, str | None]] = set()
         self.concept_mentions: set[tuple[str, str]] = set()
         self.claim_support: set[tuple[str, str]] = set()
@@ -2035,7 +2194,15 @@ class InMemoryKnowledgeStore:
         results.sort(key=_candidate_sort_key, reverse=True)
         return results[:limit]
 
-    async def create_claim(self, *, text: str, confidence: float, status: str, embedding: list[float]) -> ClaimRecord:
+    async def create_claim(
+        self,
+        *,
+        text: str,
+        confidence: float,
+        status: str,
+        embedding: list[float],
+        supporting_quote: str | None = None,
+    ) -> ClaimRecord:
         normalized_text = normalize_text(text)
         for claim in self.claims.values():
             if claim.normalized_text == normalized_text:
@@ -2048,9 +2215,60 @@ class InMemoryKnowledgeStore:
             status=status,
             created_at=utcnow_iso(),
             embedding=embedding,
+            supporting_quote=supporting_quote,
         )
         self.claims[claim.uid] = claim
         return claim
+
+    async def create_pedagogical_evidence(
+        self,
+        *,
+        concept_uid: str,
+        concept_name: str,
+        episode_id: str,
+        source_claim_uid: str,
+        statement: str,
+        supporting_quote: str,
+        kind: str,
+        status: str,
+        review_notes_json: str | None = None,
+    ) -> PedagogicalEvidenceRecord:
+        for record in self.pedagogical_evidence.values():
+            if (
+                record.concept_uid == concept_uid
+                and record.episode_id == episode_id
+                and record.source_claim_uid == source_claim_uid
+                and record.statement == statement
+            ):
+                updated = record.model_copy(
+                    update={
+                        "concept_name": concept_name,
+                        "supporting_quote": supporting_quote,
+                        "kind": kind,
+                        "status": status,
+                        "review_notes_json": review_notes_json,
+                        "updated_at": utcnow_iso(),
+                    }
+                )
+                self.pedagogical_evidence[record.uid] = updated
+                return updated
+        now = utcnow_iso()
+        record = PedagogicalEvidenceRecord(
+            uid=make_prefixed_id("pev"),
+            concept_uid=concept_uid,
+            concept_name=concept_name,
+            episode_id=episode_id,
+            source_claim_uid=source_claim_uid,
+            statement=statement,
+            supporting_quote=supporting_quote,
+            kind=kind,  # type: ignore[arg-type]
+            status=status,  # type: ignore[arg-type]
+            review_notes_json=review_notes_json,
+            created_at=now,
+            updated_at=now,
+        )
+        self.pedagogical_evidence[record.uid] = record
+        return record
 
     async def create_relation(
         self,
@@ -2089,6 +2307,19 @@ class InMemoryKnowledgeStore:
             linked_claim_uids = {claim_uid for claim_uid, supported_episode_id in self.claim_support if supported_episode_id == episode_id}
             for claim_uid in linked_claim_uids:
                 self.claim_explains.add((claim_uid, concept.uid))
+                claim = self.claims.get(claim_uid)
+                if claim is None:
+                    continue
+                await self.create_pedagogical_evidence(
+                    concept_uid=concept.uid,
+                    concept_name=concept.canonical_name,
+                    episode_id=episode_id,
+                    source_claim_uid=claim_uid,
+                    statement=claim.text,
+                    supporting_quote=claim.supporting_quote or claim.text,
+                    kind="claim",
+                    status="approved",
+                )
         return AttachConceptEvidenceResponse(
             status="attached",
             concept_uid=concept.uid,
@@ -2236,12 +2467,30 @@ class InMemoryKnowledgeStore:
             relations=relations.values(),
             source_fragments=source_fragments,
         )
+        pedagogical_evidence = [
+            TutorContextPedagogicalEvidence(
+                uid=record.uid,
+                concept_uid=record.concept_uid,
+                concept_name=record.concept_name,
+                episode_id=record.episode_id,
+                source_claim_uid=record.source_claim_uid,
+                statement=record.statement,
+                supporting_quote=record.supporting_quote,
+                kind=record.kind,
+                status=record.status,
+            )
+            for record in self.pedagogical_evidence.values()
+            if record.status == "approved"
+            and record.episode_id == episode_id
+            and record.concept_uid in concepts
+        ]
         return TutorContextBundle(
             concepts=list(concepts.values()),
             claims=list(claims.values()),
             relations=list(relations.values()),
             source_fragments=source_fragments,
             evidence=evidence,
+            pedagogical_evidence=pedagogical_evidence,
         )
 
     async def get_tutor_context_for_concept(self, concept_ref: str, depth: int = 1) -> TutorContextBundle | None:
@@ -2302,12 +2551,30 @@ class InMemoryKnowledgeStore:
             relations=relations.values(),
             source_fragments=source_fragments.values(),
         )
+        pedagogical_evidence = [
+            TutorContextPedagogicalEvidence(
+                uid=record.uid,
+                concept_uid=record.concept_uid,
+                concept_name=record.concept_name,
+                episode_id=record.episode_id,
+                source_claim_uid=record.source_claim_uid,
+                statement=record.statement,
+                supporting_quote=record.supporting_quote,
+                kind=record.kind,
+                status=record.status,
+            )
+            for record in self.pedagogical_evidence.values()
+            if record.status == "approved"
+            and record.concept_uid in concepts
+            and record.episode_id in source_fragments
+        ]
         return TutorContextBundle(
             concepts=list(concepts.values()),
             claims=list(claims.values()),
             relations=list(relations.values()),
             source_fragments=list(source_fragments.values()),
             evidence=evidence,
+            pedagogical_evidence=pedagogical_evidence,
         )
 
     async def get_pedagogical_context(self, *, user_id: str) -> GetPedagogicalContextResponse:

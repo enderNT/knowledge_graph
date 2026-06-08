@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import Counter
 
 from app.ai_provider import AIProvider
@@ -120,6 +121,7 @@ class IngestionService:
                     confidence=extracted_claim.confidence,
                     status="active",
                     embedding=claim_embedding,
+                    supporting_quote=extracted_claim.supporting_quote,
                 )
                 summary.created_claims += 1
                 await self.store.link_claim_to_episode(claim.uid, episode.uid, extracted_claim.confidence)
@@ -132,6 +134,15 @@ class IngestionService:
                             extracted_claim.confidence,
                         )
                         linked_claim_counts[concept_name] += 1
+                        await self._persist_pedagogical_evidence(
+                            episode_id=episode.uid,
+                            claim_uid=claim.uid,
+                            claim_text=claim.text,
+                            supporting_quote=claim.supporting_quote,
+                            concept_uid=concept_resolution.concept.uid,
+                            concept_name=concept_resolution.concept.canonical_name,
+                            language=episode.language,
+                        )
 
             for extracted_concept in extraction.concepts:
                 concept_resolution = resolved_concepts.get(extracted_concept.canonical_name)
@@ -148,6 +159,7 @@ class IngestionService:
                     confidence=max(0.6, min(0.95, extracted_concept.confidence)),
                     status="active",
                     embedding=quote_embedding,
+                    supporting_quote=quote,
                 )
                 summary.created_claims += 1
                 await self.store.link_claim_to_episode(claim.uid, episode.uid, extracted_concept.confidence)
@@ -157,6 +169,15 @@ class IngestionService:
                     extracted_concept.confidence,
                 )
                 linked_claim_counts[extracted_concept.canonical_name] += 1
+                await self._persist_pedagogical_evidence(
+                    episode_id=episode.uid,
+                    claim_uid=claim.uid,
+                    claim_text=claim.text,
+                    supporting_quote=quote,
+                    concept_uid=concept_resolution.concept.uid,
+                    concept_name=concept_resolution.concept.canonical_name,
+                    language=episode.language,
+                )
 
             for relation in extraction.relations:
                 from_resolution = resolved_concepts.get(relation.from_name)
@@ -270,6 +291,40 @@ class IngestionService:
         if claim_support_count <= 0 and not self._best_evidence_quote(evidence_quotes):
             return f"rejected weak concept '{canonical_name}': missing claim support or traceable evidence"
         return None
+
+    async def _persist_pedagogical_evidence(
+        self,
+        *,
+        episode_id: str,
+        claim_uid: str,
+        claim_text: str,
+        supporting_quote: str | None,
+        concept_uid: str,
+        concept_name: str,
+        language: str,
+    ) -> None:
+        effective_quote = supporting_quote or claim_text
+        if not effective_quote:
+            return
+        decision = await self.ai_provider.vet_pedagogical_evidence(
+            concept_name=concept_name,
+            claim_text=claim_text,
+            supporting_quote=effective_quote,
+            language=language,
+        )
+        if decision.status != "approved":
+            return
+        await self.store.create_pedagogical_evidence(
+            concept_uid=concept_uid,
+            concept_name=concept_name,
+            episode_id=episode_id,
+            source_claim_uid=claim_uid,
+            statement=decision.statement,
+            supporting_quote=decision.supporting_quote,
+            kind=decision.kind,
+            status=decision.status,
+            review_notes_json=json.dumps(decision.review_notes, ensure_ascii=True) if decision.review_notes else None,
+        )
 
     @staticmethod
     def _best_evidence_quote(evidence_quotes: list[str]) -> str | None:

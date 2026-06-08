@@ -8,8 +8,7 @@ from app.schemas import (
     EvaluateAnswerResponse,
     ExplainTopicResponse,
     GenerateQuizResponse,
-    LearningContextResponse,
-    NeighborhoodResponse,
+    TutorContextResponse,
 )
 
 
@@ -32,21 +31,21 @@ class AgentProxyService:
         focus: str | None = None,
         include_examples: bool = True,
     ) -> ExplainTopicResponse:
-        context, neighborhood = await self._retrieve_grounding(query=query, domain_hint=domain_hint)
-        if context.status == "no_match":
+        context = await self._retrieve_grounding(query=query)
+        if context.status != "ok":
             return ExplainTopicResponse(
                 query=query,
                 domain_hint=domain_hint,
-                status="no_match",
+                status="blocked",
                 explanation_markdown=(
-                    "No se encontro contexto recuperado suficiente para explicar este tema sin inventar contenido. "
-                    "Conviene curar el knowledge graph o probar con otra consulta."
+                    "No se encontró evidencia pedagógica aprobada suficiente para explicar este tema sin inventar contenido."
                 ),
                 key_points=[],
                 examples=[],
                 source_concept_uids=[],
                 warnings=list(context.warnings),
                 debug={"retrieval_status": "no_match", "used_neighborhood": False, "generation_mode": "skipped", "source_concept_uids": [], "source_claim_uids": []},
+                failure_reason=context.failure_reason or "insufficient_pedagogical_evidence",
             )
         return await self._content_generator.explain_topic(
             query=query,
@@ -54,8 +53,7 @@ class AgentProxyService:
             audience=audience,
             focus=focus,
             include_examples=include_examples,
-            context=context,
-            neighborhood=neighborhood,
+            tutor_context=context,
         )
 
     async def generate_quiz(
@@ -67,17 +65,18 @@ class AgentProxyService:
         question_count: int = 5,
         question_type: str = "mixed",
     ) -> GenerateQuizResponse:
-        context, neighborhood = await self._retrieve_grounding(query=query, domain_hint=domain_hint)
-        if context.status == "no_match":
+        context = await self._retrieve_grounding(query=query)
+        if context.status != "ok":
             return GenerateQuizResponse(
                 query=query,
                 domain_hint=domain_hint,
-                status="no_match",
+                status="blocked",
                 questions=[],
                 answer_key=[],
-                coverage_summary="No se pudo generar un quiz grounded porque no hubo contexto recuperable.",
+                coverage_summary="No se pudo generar un quiz grounded porque no hubo evidencia pedagógica aprobada.",
                 warnings=list(context.warnings),
                 debug={"retrieval_status": "no_match", "used_neighborhood": False, "generation_mode": "skipped", "source_concept_uids": [], "source_claim_uids": []},
+                failure_reason=context.failure_reason or "insufficient_pedagogical_evidence",
             )
         return await self._content_generator.generate_quiz(
             query=query,
@@ -85,8 +84,7 @@ class AgentProxyService:
             difficulty=difficulty,
             question_count=question_count,
             question_type=question_type,
-            context=context,
-            neighborhood=neighborhood,
+            tutor_context=context,
         )
 
     async def evaluate_answer(
@@ -98,21 +96,21 @@ class AgentProxyService:
         domain_hint: str | None = None,
         expected_answer: str | None = None,
     ) -> EvaluateAnswerResponse:
-        context, neighborhood = await self._retrieve_grounding(query=query, domain_hint=domain_hint)
-        if context.status == "no_match":
+        context = await self._retrieve_grounding(query=query)
+        if context.status != "ok":
             return EvaluateAnswerResponse(
                 query=query,
-                status="no_match",
+                status="blocked",
                 verdict="unsupported",
                 score_0_to_1=0.0,
                 feedback_markdown=(
-                    "No se puede evaluar la respuesta de forma grounded porque el knowledge graph no devolvio "
-                    "contexto suficiente para esta consulta."
+                    "No se puede evaluar la respuesta de forma grounded porque no hay evidencia pedagógica aprobada suficiente."
                 ),
                 matched_points=[],
                 missing_points=[],
                 warnings=list(context.warnings),
                 debug={"retrieval_status": "no_match", "used_neighborhood": False, "generation_mode": "skipped", "source_concept_uids": [], "source_claim_uids": []},
+                failure_reason=context.failure_reason or "insufficient_pedagogical_evidence",
             )
         return await self._content_generator.evaluate_answer(
             query=query,
@@ -120,26 +118,11 @@ class AgentProxyService:
             learner_answer=learner_answer,
             domain_hint=domain_hint,
             expected_answer=expected_answer,
-            context=context,
-            neighborhood=neighborhood,
+            tutor_context=context,
         )
 
     async def passthrough(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return await self._upstream.call_tool(tool_name, arguments)
 
-    async def _retrieve_grounding(
-        self,
-        *,
-        query: str,
-        domain_hint: str | None,
-    ) -> tuple[LearningContextResponse, NeighborhoodResponse | None]:
-        context = LearningContextResponse.model_validate(
-            await self._upstream.get_learning_context(query=query, domain_hint=domain_hint)
-        )
-        neighborhood: NeighborhoodResponse | None = None
-        needs_support = context.status == "sparse" or not context.relations
-        if needs_support and context.primary_concepts:
-            neighborhood = NeighborhoodResponse.model_validate(
-                await self._upstream.get_neighborhood(concept=context.primary_concepts[0].uid, depth=1)
-            )
-        return context, neighborhood
+    async def _retrieve_grounding(self, *, query: str) -> TutorContextResponse:
+        return TutorContextResponse.model_validate(await self._upstream.get_tutor_context(query=query))
