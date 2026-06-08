@@ -235,6 +235,7 @@ class TutorContextResponse(BaseModel):
 
 
 PedagogicalDimension = Literal["recognition", "recall", "explanation", "application"]
+StudyMode = Literal["hybrid", "backlog", "recovery", "isolated"]
 AdaptiveBlockPurpose = Literal["spaced_repetition_review", "new_content"]
 AdaptiveQuestionType = Literal[
     "multiple_choice_single",
@@ -479,6 +480,8 @@ class DueSRItem(BaseModel):
     days_overdue: int = Field(ge=0)
     concept_name: str = ""
     domain: str = ""
+    ease_factor: float = Field(default=2.5, ge=1.3)
+    interval_days: int = Field(default=0, ge=0)
     mastery_score_0_to_100: float = Field(default=50.0, ge=0.0, le=100.0)
     confidence_0_to_1: float = Field(default=0.25, ge=0.0, le=1.0)
     requires_direct_validation: bool = False
@@ -648,6 +651,7 @@ class AdaptiveSessionSummary(BaseModel):
 class AdaptiveSessionSnapshot(BaseModel):
     session_id: str
     user_id: str
+    study_mode: StudyMode = "hybrid"
     resolved_reference: TutorContextResolvedReference
     domain_hint: str | None = None
     language: str = "es"
@@ -666,6 +670,7 @@ class AdaptiveSessionStartRequest(BaseModel):
     query: str | None = Field(default=None, min_length=1)
     episode_id: str | None = Field(default=None, min_length=1)
     job_id: str | None = Field(default=None, min_length=1)
+    study_mode: StudyMode = "hybrid"
     domain_hint: str | None = None
     language: str = "es"
     constraints: AdaptiveSessionConstraints = Field(default_factory=AdaptiveSessionConstraints)
@@ -683,6 +688,8 @@ class AdaptiveSessionStartRequest(BaseModel):
         ]
         if len(provided) != 1:
             raise ValueError("exactly one of query, episode_id or job_id must be provided")
+        if self.study_mode == "isolated" and not self.domain_hint:
+            raise ValueError("domain_hint is required when study_mode is isolated")
         return self
 
 

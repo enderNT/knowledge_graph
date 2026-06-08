@@ -1197,6 +1197,8 @@ class ArcadeKnowledgeStore:
                     ),
                     concept_name=concept_name,
                     domain=domain,
+                    ease_factor=state.ease_factor,
+                    interval_days=state.interval_days,
                     mastery_score_0_to_100=concept_state.mastery_score_0_to_100 if concept_state else 50.0,
                     confidence_0_to_1=concept_state.confidence_0_to_1 if concept_state else 0.25,
                     requires_direct_validation=state.requires_direct_validation,
@@ -1258,7 +1260,7 @@ class ArcadeKnowledgeStore:
     async def get_adaptive_session(self, *, session_id: str) -> AdaptiveSessionSnapshot | None:
         rows = await self._safe_query(
             (
-                "SELECT session_id, user_id, status, resolved_reference_json, domain_hint, language, "
+                "SELECT session_id, user_id, study_mode, status, resolved_reference_json, domain_hint, language, "
                 "constraints_json, tutor_context_json, current_block_json, block_history_json, summary_json, "
                 "opened_at, updated_at FROM AdaptiveSession WHERE session_id = :session_id LIMIT 1"
             ),
@@ -1270,6 +1272,7 @@ class ArcadeKnowledgeStore:
         return AdaptiveSessionSnapshot(
             session_id=row["session_id"],
             user_id=row["user_id"],
+            study_mode=row.get("study_mode") or "hybrid",
             resolved_reference=self._parse_model(
                 row.get("resolved_reference_json"),
                 TutorContextResolvedReference,
@@ -1294,6 +1297,7 @@ class ArcadeKnowledgeStore:
         payload = {
             "session_id": session.session_id,
             "user_id": session.user_id,
+            "study_mode": session.study_mode,
             "status": session.status,
             "resolved_reference_json": session.resolved_reference.model_dump_json(),
             "domain_hint": session.domain_hint,
@@ -1313,7 +1317,7 @@ class ArcadeKnowledgeStore:
         if rows:
             await self.client.command(
                 (
-                    "UPDATE AdaptiveSession SET user_id = :user_id, status = :status, "
+                    "UPDATE AdaptiveSession SET user_id = :user_id, study_mode = :study_mode, status = :status, "
                     "resolved_reference_json = :resolved_reference_json, domain_hint = :domain_hint, "
                     "language = :language, constraints_json = :constraints_json, "
                     "tutor_context_json = :tutor_context_json, current_block_json = :current_block_json, "
@@ -1326,7 +1330,7 @@ class ArcadeKnowledgeStore:
             return
         await self.client.command(
             (
-                "INSERT INTO AdaptiveSession SET session_id = :session_id, user_id = :user_id, status = :status, "
+                "INSERT INTO AdaptiveSession SET session_id = :session_id, user_id = :user_id, study_mode = :study_mode, status = :status, "
                 "resolved_reference_json = :resolved_reference_json, domain_hint = :domain_hint, "
                 "language = :language, constraints_json = :constraints_json, "
                 "tutor_context_json = :tutor_context_json, current_block_json = :current_block_json, "
@@ -2385,6 +2389,8 @@ class InMemoryKnowledgeStore:
                     ),
                     concept_name=concept_name,
                     domain=domain,
+                    ease_factor=state.ease_factor,
+                    interval_days=state.interval_days,
                     mastery_score_0_to_100=concept_state.mastery_score_0_to_100 if concept_state else 50.0,
                     confidence_0_to_1=concept_state.confidence_0_to_1 if concept_state else 0.25,
                     requires_direct_validation=state.requires_direct_validation,

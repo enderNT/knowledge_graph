@@ -268,3 +268,78 @@ def test_due_items_sort_by_overdue_then_mastery_then_confidence(settings, store)
         assert [item.concept_uid for item in due.items] == ["cn_b", "cn_a", "cn_c"]
 
     asyncio.run(run())
+
+
+def test_list_review_candidates_for_planner_filters_by_domain_and_recovery(settings, store):
+    provider = StubAIProvider(settings)
+    service = _make_service(settings, store)
+    js_uid = _seed_concept(store, provider, canonical_name="Promesas", domain="JavaScript")
+    psych_uid = _seed_concept(store, provider, canonical_name="Memoria", domain="Psicología")
+
+    async def run():
+        await store.upsert_pedagogical_concept_state(
+            _pedagogical_state(
+                user_id="user-1",
+                concept_uid=js_uid,
+                concept_name="Promesas",
+                domain="JavaScript",
+                mastery=50.0,
+                confidence=0.4,
+            )
+        )
+        await store.upsert_pedagogical_concept_state(
+            _pedagogical_state(
+                user_id="user-1",
+                concept_uid=psych_uid,
+                concept_name="Memoria",
+                domain="Psicología",
+                mastery=45.0,
+                confidence=0.3,
+            )
+        )
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-1",
+                concept_uid=js_uid,
+                dimension="recall",
+                repetitions=2,
+                ease_factor=2.5,
+                interval_days=7,
+                last_reviewed_at="2026-06-01T10:00:00+00:00",
+                next_review_at="2026-06-02T10:00:00+00:00",
+                propagation_relief_count=0,
+                requires_direct_validation=False,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-1",
+                concept_uid=psych_uid,
+                dimension="recall",
+                repetitions=2,
+                ease_factor=1.6,
+                interval_days=6,
+                last_reviewed_at="2026-06-01T10:00:00+00:00",
+                next_review_at="2026-06-02T10:00:00+00:00",
+                propagation_relief_count=0,
+                requires_direct_validation=False,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+
+        js_candidates = await service.list_review_candidates_for_planner(
+            user_id="user-1",
+            domain_hint="JavaScript",
+        )
+        assert [item.concept_uid for item in js_candidates] == [js_uid]
+        assert js_candidates[0].interval_days == 7
+        assert js_candidates[0].ease_factor == 2.5
+
+        recovery_candidates = await service.list_review_candidates_for_planner(
+            user_id="user-1",
+            recovery_only=True,
+        )
+        assert [item.concept_uid for item in recovery_candidates] == [psych_uid]
+
+    asyncio.run(run())

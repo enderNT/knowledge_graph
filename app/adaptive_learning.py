@@ -46,6 +46,7 @@ from app.schemas import (
     AdaptiveItemSubmission,
     AdaptiveSessionConstraints,
     DueSRItem,
+    StudyMode,
     UpdateSRFromBlockRequest,
 )
 from app.spaced_repetition import SpacedRepetitionService
@@ -115,17 +116,26 @@ class AdaptiveLearningService:
     ) -> AdaptiveSessionStartResponse:
         tutor_context = await self._resolve_tutor_context(payload)
         pedagogical_context = await self._store.get_pedagogical_context(user_id=payload.user_id)
-        review_candidates = await self._sr_service.list_review_candidates_for_planner(user_id=payload.user_id)
-        review_target, new_target = self._session_mix(
+        review_candidates = await self._review_candidates_for_mode(
+            user_id=payload.user_id,
+            study_mode=payload.study_mode,
+            domain_hint=payload.domain_hint,
+        )
+        review_target, new_target = self._session_targets(
+            study_mode=payload.study_mode,
             review_candidate_count=len(review_candidates),
             max_blocks=payload.constraints.max_blocks,
         )
+        if payload.study_mode in {"backlog", "recovery"} and not review_candidates:
+            raise HTTPException(status_code=422, detail="no_review_candidates_for_mode")
         block = await self._build_next_block(
             user_id=payload.user_id,
             constraints=payload.constraints,
             route_tutor_context=tutor_context,
             pedagogical_context=pedagogical_context,
             previous_result=None,
+            study_mode=payload.study_mode,
+            domain_hint=payload.domain_hint,
             review_blocks_completed=0,
             review_blocks_target=review_target,
             review_candidates=review_candidates,
@@ -133,6 +143,7 @@ class AdaptiveLearningService:
         session = AdaptiveSessionSnapshot(
             session_id=make_prefixed_id("ads"),
             user_id=payload.user_id,
+            study_mode=payload.study_mode,
             resolved_reference=tutor_context.resolved_reference,
             domain_hint=payload.domain_hint,
             language=payload.language,
@@ -288,13 +299,19 @@ class AdaptiveLearningService:
         )
         next_block = None
         if not session_closed:
-            review_candidates = await self._sr_service.list_review_candidates_for_planner(user_id=session.user_id)
+            review_candidates = await self._review_candidates_for_mode(
+                user_id=session.user_id,
+                study_mode=session.study_mode,
+                domain_hint=session.domain_hint,
+            )
             next_block = await self._build_next_block(
                 user_id=session.user_id,
                 constraints=session.constraints,
                 route_tutor_context=session.tutor_context,
                 pedagogical_context=updated_context,
                 previous_result=block_result,
+                study_mode=session.study_mode,
+                domain_hint=session.domain_hint,
                 review_blocks_completed=review_blocks_completed,
                 review_blocks_target=session.summary.review_blocks_target,
                 review_candidates=review_candidates,
@@ -366,16 +383,28 @@ class AdaptiveLearningService:
         user_id: str,
         tutor_context: TutorContextResponse,
         pedagogical_context: PedagogicalContextSnapshot,
+        domain_hint: str | None = None,
     ) -> PedagogicalConceptState:
         state_map = {state.concept_uid: state for state in pedagogical_context.concepts}
         candidates: list[PedagogicalConceptState] = []
         for concept in tutor_context.concepts:
+            if domain_hint is not None and concept.domain != domain_hint:
+                continue
             existing = state_map.get(concept.uid)
             if existing is not None:
                 candidates.append(existing)
                 continue
-            candidates.append(self._default_concept_state(user_id=user_id, concept_uid=concept.uid, concept_name=concept.canonical_name, domain=concept.domain))
+            candidates.append(
+                self._default_concept_state(
+                    user_id=user_id,
+                    concept_uid=concept.uid,
+                    concept_name=concept.canonical_name,
+                    domain=concept.domain,
+                )
+            )
         if not candidates:
+            if domain_hint is not None:
+                raise HTTPException(status_code=422, detail="no_concepts_available_for_domain")
             raise HTTPException(status_code=422, detail="tutor context returned no concepts for adaptive planning")
         candidates.sort(
             key=lambda item: (
@@ -394,6 +423,8 @@ class AdaptiveLearningService:
         route_tutor_context: TutorContextResponse,
         pedagogical_context: PedagogicalContextSnapshot,
         previous_result: AdaptiveBlockResult | None,
+        study_mode: StudyMode,
+        domain_hint: str | None,
         review_blocks_completed: int,
         review_blocks_target: int,
         review_candidates: list[DueSRItem],
@@ -408,11 +439,14 @@ class AdaptiveLearningService:
                 )
                 if review_block is not None:
                     return review_block
+            if study_mode in {"backlog", "recovery"}:
+                raise HTTPException(status_code=422, detail="no_review_candidates_for_mode")
 
         concept_state = await self._select_target_concept(
             user_id=user_id,
             tutor_context=route_tutor_context,
             pedagogical_context=pedagogical_context,
+            domain_hint=domain_hint if study_mode == "isolated" else None,
         )
         decision = self._plan_block(
             concept_state=concept_state,
@@ -425,6 +459,19 @@ class AdaptiveLearningService:
             concept_state=concept_state,
             constraints=constraints,
             decision=decision,
+        )
+
+    async def _review_candidates_for_mode(
+        self,
+        *,
+        user_id: str,
+        study_mode: StudyMode,
+        domain_hint: str | None,
+    ) -> list[DueSRItem]:
+        return await self._sr_service.list_review_candidates_for_planner(
+            user_id=user_id,
+            domain_hint=domain_hint if study_mode == "isolated" else None,
+            recovery_only=study_mode == "recovery",
         )
 
     async def _build_review_block(
@@ -522,6 +569,20 @@ class AdaptiveLearningService:
             review_blocks = 1
         review_blocks = min(review_blocks, review_candidate_count)
         return review_blocks, max_blocks - review_blocks
+
+    def _session_targets(
+        self,
+        *,
+        study_mode: StudyMode,
+        review_candidate_count: int,
+        max_blocks: int,
+    ) -> tuple[int, int]:
+        if study_mode in {"backlog", "recovery"}:
+            return max_blocks, 0
+        return self._session_mix(
+            review_candidate_count=review_candidate_count,
+            max_blocks=max_blocks,
+        )
 
     def _plan_block(
         self,

@@ -140,6 +140,7 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE PROPERTY UserSpacedRepetition.updated_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY AdaptiveSession.session_id IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.user_id IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.study_mode IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.status IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.resolved_reference_json IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.domain_hint IF NOT EXISTS STRING",

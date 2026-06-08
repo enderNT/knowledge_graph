@@ -109,7 +109,13 @@ class SpacedRepetitionService:
             ),
         )
 
-    async def list_review_candidates_for_planner(self, *, user_id: str) -> list[DueSRItem]:
+    async def list_review_candidates_for_planner(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None = None,
+        recovery_only: bool = False,
+    ) -> list[DueSRItem]:
         due_items = await self._store.list_due_spaced_repetition_items(user_id=user_id, now_iso=utcnow_iso())
         due_keys = {(item.concept_uid, item.dimension) for item in due_items}
         context = await self._store.get_pedagogical_context(user_id=user_id)
@@ -134,13 +140,20 @@ class SpacedRepetitionService:
                     days_overdue=0,
                     concept_name=concept_name,
                     domain=domain,
+                    ease_factor=state.ease_factor,
+                    interval_days=state.interval_days,
                     mastery_score_0_to_100=concept_state.mastery_score_0_to_100 if concept_state else 50.0,
                     confidence_0_to_1=concept_state.confidence_0_to_1 if concept_state else 0.25,
                     requires_direct_validation=True,
                 )
             )
         forced_items.sort(key=lambda item: (item.mastery_score_0_to_100, item.confidence_0_to_1))
-        return [*forced_items, *due_items]
+        candidates = [*forced_items, *due_items]
+        if domain_hint is not None:
+            candidates = [item for item in candidates if item.domain == domain_hint]
+        if recovery_only:
+            candidates = [item for item in candidates if item.interval_days <= 3 or item.ease_factor <= 1.7]
+        return candidates
 
     async def _get_or_create_state(
         self,

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
 from app.adaptive_learning import AdaptiveLearningService
 from app.ai_provider import StubAIProvider
 from app.schemas import (
@@ -81,6 +84,14 @@ def _build_block_submissions(block: dict) -> list[dict]:
 def test_adaptive_endpoints_require_api_key(client):
     response = client.post("/v1/adaptive/sessions/start", json={"user_id": "user-1", "query": "memoria"})
     assert response.status_code == 401
+
+
+def test_adaptive_session_start_request_defaults_to_hybrid_and_requires_domain_for_isolated():
+    request = AdaptiveSessionStartRequest(user_id="user-1", query="memoria")
+    assert request.study_mode == "hybrid"
+
+    with pytest.raises(ValidationError):
+        AdaptiveSessionStartRequest(user_id="user-1", query="memoria", study_mode="isolated")
 
 
 def test_adaptive_session_start_supports_query_episode_and_job(client, auth_headers, settings, store):
@@ -487,3 +498,185 @@ def test_adaptive_session_prioritizes_requires_direct_validation_before_regular_
     assert body["current_block"]["plan"]["block_purpose"] == "spaced_repetition_review"
     assert body["current_block"]["plan"]["due_item"]["concept_uid"] == forced.uid
     assert body["current_block"]["plan"]["due_item"]["requires_direct_validation"] is True
+
+
+def test_adaptive_backlog_mode_requires_due_candidates(client, auth_headers, settings, store):
+    provider = StubAIProvider(settings)
+    concept = _seed_concept(
+        store,
+        provider,
+        canonical_name="Memoria semántica",
+        aliases=["memoria semantica"],
+        domain="Psicología",
+        description="Conocimiento factual estable.",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="La memoria semántica almacena conocimiento general.",
+        concept_uids=[concept.uid],
+        episode_text="La memoria semántica permite recordar hechos y conceptos.",
+        episode_id="ep_backlog_no_due",
+    )
+
+    response = client.post(
+        "/v1/adaptive/sessions/start",
+        headers=auth_headers,
+        json={"user_id": "user-no-review", "query": "memoria semantica", "study_mode": "backlog"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "no_review_candidates_for_mode"
+
+
+def test_adaptive_recovery_mode_filters_to_urgent_reviews(client, auth_headers, settings, store):
+    provider = StubAIProvider(settings)
+    urgent = _seed_concept(
+        store,
+        provider,
+        canonical_name="Recuerdo Fragil",
+        aliases=["recuerdo fragil"],
+        domain="Psicología",
+        description="Concepto urgente.",
+    )
+    non_urgent = _seed_concept(
+        store,
+        provider,
+        canonical_name="Recuerdo Estable",
+        aliases=["recuerdo estable"],
+        domain="Psicología",
+        description="Concepto no urgente.",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="Soporte de recuerdo fragil.",
+        concept_uids=[urgent.uid],
+        episode_text="Episodio urgente.",
+        episode_id="ep_recovery_urgent",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="Soporte de recuerdo estable.",
+        concept_uids=[non_urgent.uid],
+        episode_text="Episodio estable.",
+        episode_id="ep_recovery_stable",
+    )
+
+    async def seed_sr():
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-recovery",
+                concept_uid=urgent.uid,
+                dimension="recall",
+                repetitions=3,
+                ease_factor=1.6,
+                interval_days=6,
+                last_reviewed_at="2026-06-01T10:00:00+00:00",
+                next_review_at="2026-06-02T10:00:00+00:00",
+                propagation_relief_count=0,
+                requires_direct_validation=False,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-recovery",
+                concept_uid=non_urgent.uid,
+                dimension="recall",
+                repetitions=3,
+                ease_factor=2.5,
+                interval_days=7,
+                last_reviewed_at="2026-06-01T10:00:00+00:00",
+                next_review_at="2026-06-02T10:00:00+00:00",
+                propagation_relief_count=0,
+                requires_direct_validation=False,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+
+    asyncio.run(seed_sr())
+
+    response = client.post(
+        "/v1/adaptive/sessions/start",
+        headers=auth_headers,
+        json={"user_id": "user-recovery", "query": "recuerdo fragil", "study_mode": "recovery"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session"]["study_mode"] == "recovery"
+    assert body["session"]["summary"]["review_blocks_target"] == body["session"]["summary"]["total_blocks"]
+    assert body["session"]["summary"]["new_blocks_target"] == 0
+    assert body["current_block"]["plan"]["block_purpose"] == "spaced_repetition_review"
+    assert body["current_block"]["plan"]["due_item"]["concept_uid"] == urgent.uid
+
+
+def test_adaptive_isolated_mode_restricts_review_and_new_content_to_domain(client, auth_headers, settings, store):
+    provider = StubAIProvider(settings)
+    js_concept = _seed_concept(
+        store,
+        provider,
+        canonical_name="Promesas",
+        aliases=["promesas js"],
+        domain="JavaScript",
+        description="Control de asincronía en JS.",
+    )
+    psycho_concept = _seed_concept(
+        store,
+        provider,
+        canonical_name="Memoria de trabajo",
+        aliases=["working memory"],
+        domain="Psicología",
+        description="Sistema temporal de procesamiento cognitivo.",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="Las promesas representan resultados futuros en JavaScript.",
+        concept_uids=[js_concept.uid],
+        episode_text="Las promesas encapsulan valores asincrónicos.",
+        episode_id="ep_iso_js",
+    )
+    _seed_claim_and_episode(
+        store,
+        provider,
+        claim_text="La memoria de trabajo mantiene información activa temporalmente.",
+        concept_uids=[psycho_concept.uid],
+        episode_text="La memoria de trabajo ayuda a manipular información actual.",
+        episode_id="ep_iso_psy",
+    )
+
+    async def seed_sr():
+        await store.upsert_spaced_repetition_state(
+            SpacedRepetitionState(
+                user_id="user-isolated",
+                concept_uid=psycho_concept.uid,
+                dimension="recall",
+                repetitions=1,
+                ease_factor=2.5,
+                interval_days=1,
+                last_reviewed_at=None,
+                next_review_at="2026-06-01T10:00:00+00:00",
+                propagation_relief_count=0,
+                requires_direct_validation=False,
+                updated_at="2026-06-06T10:00:00+00:00",
+            )
+        )
+
+    asyncio.run(seed_sr())
+
+    response = client.post(
+        "/v1/adaptive/sessions/start",
+        headers=auth_headers,
+        json={
+            "user_id": "user-isolated",
+            "query": "promesas js",
+            "study_mode": "isolated",
+            "domain_hint": "JavaScript",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session"]["study_mode"] == "isolated"
+    assert body["current_block"]["plan"]["block_purpose"] == "new_content"
+    assert body["current_block"]["plan"]["concept_domain"] == "JavaScript"
