@@ -671,6 +671,12 @@ async def test_agent_mcp_exposes_exactly_twenty_four_tools(client_session):
     assert "from" in tool_map["kg_link_concepts"].inputSchema["properties"]
     assert tool_map["kg_upsert_concept"].inputSchema["properties"]["uid"]["type"] == "string"
 
+    descriptions = {tool.name: (tool.description or "").strip() for tool in tools.tools}
+    assert all(descriptions.values())
+    assert "grounded context" in descriptions["explain_topic"].lower()
+    assert "strict tutor-ready context" in descriptions["kg_get_tutor_context"].lower()
+    assert "adaptive study session" in descriptions["start_adaptive_session"].lower()
+
 
 @pytest.mark.anyio
 async def test_agent_high_level_tools_cover_ok_sparse_and_no_match(client_session):

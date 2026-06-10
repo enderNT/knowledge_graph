@@ -242,6 +242,7 @@ def create_agent_mcp_server(
         focus: str | None = None,
         include_examples: bool = True,
     ) -> dict[str, Any]:
+        """Explain a topic using grounded context retrieved from the knowledge graph."""
         try:
             return (await service.explain_topic(
                 query=query,
@@ -261,6 +262,7 @@ def create_agent_mcp_server(
         question_count: Annotated[int, Field(ge=1, le=10)] = 5,
         question_type: Annotated[str, Field(pattern="^(mixed|multiple_choice|open)$")] = "mixed",
     ) -> dict[str, Any]:
+        """Generate a grounded quiz from retrieved graph context for the requested topic."""
         try:
             return (await service.generate_quiz(
                 query=query,
@@ -280,6 +282,7 @@ def create_agent_mcp_server(
         domain_hint: str | None = None,
         expected_answer: str | None = None,
     ) -> dict[str, Any]:
+        """Evaluate a learner answer against grounded graph evidence for the requested topic."""
         try:
             return (await service.evaluate_answer(
                 query=query,
@@ -298,6 +301,7 @@ def create_agent_mcp_server(
         tags: list[str] | None = None,
         language: str = "es",
     ) -> dict[str, Any]:
+        """Ingest a text fragment into the knowledge graph and wait for the semantic result when possible."""
         try:
             return await upstream.add_knowledge_fragment(
                 text=text,
@@ -310,6 +314,7 @@ def create_agent_mcp_server(
 
     @mcp.tool(name="kg_reset_knowledge_base")
     async def kg_reset_knowledge_base() -> dict[str, Any]:
+        """Reset the stored graph, pedagogical state, adaptive sessions and queued ingestion payloads."""
         try:
             return await upstream.reset_knowledge_base()
         except AgentMCPUpstreamError as exc:
@@ -321,6 +326,7 @@ def create_agent_mcp_server(
         domain_hint: str | None = None,
         limit: Annotated[int, Field(ge=1, le=50)] = 10,
     ) -> dict[str, Any]:
+        """Search raw candidate concepts related to a query for inspection or debugging."""
         try:
             return await upstream.search_candidates(query=query, domain_hint=domain_hint, limit=limit)
         except AgentMCPUpstreamError as exc:
@@ -337,6 +343,7 @@ def create_agent_mcp_server(
         include_neighborhood: bool = True,
         depth: Annotated[int, Field(ge=1, le=2)] = 1,
     ) -> dict[str, Any]:
+        """Fetch broad learning-ready context built from search candidates, claims, episodes and neighborhood."""
         try:
             return await upstream.get_learning_context(
                 query=query,
@@ -359,6 +366,7 @@ def create_agent_mcp_server(
         depth: Annotated[int, Field(ge=1, le=1)] = 1,
         include_evidence: bool = True,
     ) -> dict[str, Any]:
+        """Fetch strict tutor-ready context from exactly one reference with optional direct evidence."""
         try:
             return await upstream.get_tutor_context(
                 query=query,
@@ -378,6 +386,7 @@ def create_agent_mcp_server(
         description: str = "",
         uid: str | None = None,
     ) -> dict[str, Any]:
+        """Create or update a concept by uid or canonical name in the knowledge graph."""
         try:
             return await upstream.upsert_concept(
                 uid=uid,
@@ -396,6 +405,7 @@ def create_agent_mcp_server(
         aliases: list[str] | None = None,
         description: str = "",
     ) -> dict[str, Any]:
+        """Create a concept strictly and fail on canonical name or alias collisions."""
         try:
             return await upstream.create_concept(
                 canonical_name=canonical_name,
@@ -412,6 +422,7 @@ def create_agent_mcp_server(
         episode_id: Annotated[str, Field(min_length=1)],
         link_episode_claims: bool = True,
     ) -> dict[str, Any]:
+        """Attach an episode as explicit evidence for a concept and optionally link its claims."""
         try:
             return await upstream.attach_concept_evidence(
                 concept_ref=concept_ref,
@@ -428,6 +439,7 @@ def create_agent_mcp_server(
         to: Annotated[str, Field(min_length=1)],
         evidence_episode_id: str | None = None,
     ) -> dict[str, Any]:
+        """Create a semantic relation between two concepts with optional evidence episode traceability."""
         try:
             return await upstream.link_concepts(
                 from_ref=from_,
@@ -443,6 +455,7 @@ def create_agent_mcp_server(
         concept: Annotated[str, Field(min_length=1)],
         depth: Annotated[int, Field(ge=1, le=2)] = 1,
     ) -> dict[str, Any]:
+        """Fetch the graph neighborhood around one concept."""
         try:
             return await upstream.get_neighborhood(concept=concept, depth=depth)
         except AgentMCPUpstreamError as exc:
@@ -454,6 +467,7 @@ def create_agent_mcp_server(
         domain: str | None = None,
         concept_uids: list[str] | None = None,
     ) -> dict[str, Any]:
+        """Fetch persisted pedagogical context for a user, optionally filtered by domain or concepts."""
         try:
             return await upstream.get_pedagogical_context(
                 user_id=user_id,
@@ -470,6 +484,7 @@ def create_agent_mcp_server(
         domain_hint: str | None = None,
         session_closed_at: str | None = None,
     ) -> dict[str, Any]:
+        """Persist formal evaluation results into the user's pedagogical context."""
         try:
             return await upstream.update_pedagogical_context(
                 user_id=user_id,
@@ -487,6 +502,7 @@ def create_agent_mcp_server(
         concept_uids: list[str] | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
+        """Build the operational pedagogical session view used to plan study for a user."""
         try:
             return await upstream.get_pedagogical_session_view(
                 user_id=user_id,
@@ -503,6 +519,7 @@ def create_agent_mcp_server(
         concept_uid: Annotated[str, Field(min_length=1)],
         dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
     ) -> dict[str, Any]:
+        """Fetch spaced repetition state for one user, concept and learning dimension."""
         try:
             return await upstream.get_sr_state(
                 user_id=user_id,
@@ -516,6 +533,7 @@ def create_agent_mcp_server(
     async def kg_sr_get_due_items(
         user_id: Annotated[str, Field(min_length=1)],
     ) -> dict[str, Any]:
+        """Fetch due spaced repetition items for a user ordered for review."""
         try:
             return await upstream.get_due_sr_items(user_id=user_id)
         except AgentMCPUpstreamError as exc:
@@ -534,6 +552,7 @@ def create_agent_mcp_server(
         precision: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0,
         was_direct_evaluation: bool = True,
     ) -> dict[str, Any]:
+        """Update spaced repetition state deterministically from an evaluated adaptive block result."""
         try:
             return await upstream.update_sr_from_block_result(
                 user_id=user_id,
@@ -557,6 +576,7 @@ def create_agent_mcp_server(
         source_dimension: Annotated[str, Field(pattern="^(recognition|recall|explanation|application)$")],
         quality_q: Annotated[int, Field(ge=0, le=5)],
     ) -> dict[str, Any]:
+        """Apply prerequisite review relief from a mastered child concept to its parents."""
         try:
             return await upstream.apply_prereq_relief(
                 user_id=user_id,
@@ -571,6 +591,7 @@ def create_agent_mcp_server(
     async def kg_sr_get_stats(
         user_id: Annotated[str, Field(min_length=1)],
     ) -> dict[str, Any]:
+        """Fetch aggregate spaced repetition statistics for a user."""
         try:
             return await upstream.get_sr_stats(user_id=user_id)
         except AgentMCPUpstreamError as exc:
@@ -587,6 +608,7 @@ def create_agent_mcp_server(
         language: str = "es",
         constraints: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Start an adaptive study session from exactly one reference such as query, episode or job."""
         try:
             return await upstream.start_adaptive_session(
                 user_id=user_id,
@@ -608,6 +630,7 @@ def create_agent_mcp_server(
         submissions: list[dict[str, Any]],
         interaction_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Submit one answered adaptive block and advance or close the study session."""
         try:
             return await upstream.submit_adaptive_block(
                 session_id=session_id,
@@ -622,6 +645,7 @@ def create_agent_mcp_server(
     async def get_adaptive_session(
         session_id: Annotated[str, Field(min_length=1)],
     ) -> dict[str, Any]:
+        """Fetch the current state of an adaptive session without advancing it."""
         try:
             return await upstream.get_adaptive_session(session_id=session_id)
         except AgentMCPUpstreamError as exc:
