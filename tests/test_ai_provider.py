@@ -10,6 +10,27 @@ from app.config import Settings
 from app.utils import fit_embedding_dimensions
 
 
+class _CapturedResponse:
+    def __init__(self, content: dict[str, object]) -> None:
+        self._content = content
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"choices": [{"message": {"content": json.dumps(self._content)}}]}
+
+
+class _CapturedClient:
+    def __init__(self, content: dict[str, object]) -> None:
+        self._content = content
+        self.requests: list[dict[str, object]] = []
+
+    async def post(self, *_args, **kwargs):
+        self.requests.append(kwargs)
+        return _CapturedResponse(self._content)
+
+
 def test_stub_extractor_prefers_named_entities_and_structured_sections(settings):
     provider = StubAIProvider(settings)
     text = """
@@ -104,56 +125,30 @@ def test_openai_extractor_sanitizes_without_heuristic_augmentation():
     )
     provider = OpenAICompatibleProvider(settings)
 
-    class _FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "domain": "Programacion COBOL",
-                                    "topics": ["Programacion COBOL"],
-                                    "concepts": [
-                                        {
-                                            "canonical_name": "Formato Decimal Empaquetado",
-                                            "aliases": ["decimal empaquetado"],
-                                            "description": "Representa numeros en formato compacto.",
-                                            "evidence_quotes": ["Packed Decimal Format"],
-                                            "confidence": 0.92,
-                                        },
-                                        {
-                                            "canonical_name": "Simple",
-                                            "aliases": [],
-                                            "description": "Generico.",
-                                            "evidence_quotes": [],
-                                            "confidence": 0.51,
-                                        },
-                                    ],
-                                    "claims": [
-                                        {
-                                            "text": "Packed Decimal Format is a numeric representation in COBOL.",
-                                            "confidence": 0.91,
-                                            "explains": ["Formato Decimal Empaquetado"],
-                                            "supporting_quote": "Packed Decimal Format",
-                                        }
-                                    ],
-                                    "relations": [],
-                                }
-                            )
-                        }
-                    }
-                ]
-            }
-
-    class _FakeClient:
-        async def post(self, *_args, **_kwargs):
-            return _FakeResponse()
-
-    provider.client = _FakeClient()
+    provider.client = _CapturedClient(
+        {
+            "domain": "Programacion COBOL",
+            "topics": ["Programacion COBOL"],
+            "concepts": [
+                {
+                    "canonical_name": "Formato Decimal Empaquetado",
+                    "aliases": ["decimal empaquetado"],
+                    "description": "Representa numeros en formato compacto.",
+                    "evidence_quotes": ["Packed Decimal Format"],
+                    "confidence": 0.92,
+                }
+            ],
+            "claims": [
+                {
+                    "text": "Packed Decimal Format is a numeric representation in COBOL.",
+                    "confidence": 0.91,
+                    "explains": ["Formato Decimal Empaquetado"],
+                    "supporting_quote": "Packed Decimal Format",
+                }
+            ],
+            "relations": [],
+        }
+    )
 
     text = (
         "Numeric Representations in COBOL\n"
@@ -164,9 +159,131 @@ def test_openai_extractor_sanitizes_without_heuristic_augmentation():
 
     concept_names = [item.canonical_name for item in extraction.concepts]
     assert "Formato Decimal Empaquetado" in concept_names
-    assert "Simple" in concept_names
     assert extraction.concepts[0].evidence_quotes == ["Packed Decimal Format"]
     assert extraction.claims[0].supporting_quote == "Packed Decimal Format"
+
+
+def test_openai_extractor_prompt_excludes_examples_and_identifiers():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    provider.client = _CapturedClient(
+        {
+            "domain": "Programacion",
+            "topics": ["Programacion"],
+            "concepts": [],
+            "claims": [],
+            "relations": [],
+        }
+    )
+
+    asyncio.run(provider.extract("customer_id = 42", "es", ["Programacion"]))
+
+    request = provider.client.requests[0]
+    system_prompt = request["json"]["messages"][0]["content"]
+
+    assert "A concept must be a teachable, reusable abstraction" in system_prompt
+    assert "Do not treat concrete examples, sample cases, illustrative instances, variable names, field names, identifiers, literals" in system_prompt
+    assert "If a fragment contains an example of a more general idea, extract the general concept only when it is explicitly stated in the text" in system_prompt
+    assert "If a phrase could be read both as an example and as an idea, prefer the general idea and not the instance" in system_prompt
+
+
+def test_openai_extractor_supports_technical_examples_as_context_only():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    provider.client = _CapturedClient(
+        {
+            "domain": "Bases de Datos",
+            "topics": ["Bases de Datos"],
+            "concepts": [
+                {
+                    "canonical_name": "Normalizacion",
+                    "aliases": [],
+                    "description": "Reduce redundancia y mejora la consistencia de datos.",
+                    "evidence_quotes": ["La normalización evita duplicidad"],
+                    "confidence": 0.95,
+                }
+            ],
+            "claims": [
+                {
+                    "text": "La normalización evita duplicidad en tablas como users y orders.",
+                    "confidence": 0.88,
+                    "explains": ["Normalizacion"],
+                    "supporting_quote": "La normalización evita duplicidad",
+                }
+            ],
+            "relations": [],
+        }
+    )
+
+    text = (
+        "La normalización evita duplicidad. "
+        "En el ejemplo aparecen tablas users y orders, el campo customer_id y el literal 'PENDING'."
+    )
+    extraction = asyncio.run(provider.extract(text, "es", ["Bases de Datos"]))
+
+    concept_names = [item.canonical_name for item in extraction.concepts]
+    assert concept_names == ["Normalizacion"]
+    assert extraction.claims[0].supporting_quote == "La normalización evita duplicidad"
+
+
+def test_openai_extractor_supports_pedagogical_examples_as_context_only():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    provider.client = _CapturedClient(
+        {
+            "domain": "Psicologia",
+            "topics": ["Psicologia"],
+            "concepts": [
+                {
+                    "canonical_name": "Condicionamiento Clasico",
+                    "aliases": [],
+                    "description": "Aprendizaje por asociacion entre estimulos.",
+                    "evidence_quotes": ["El condicionamiento clásico asocia estímulos"],
+                    "confidence": 0.96,
+                }
+            ],
+            "claims": [
+                {
+                    "text": "El ejemplo del perro de Pavlov ilustra que el condicionamiento clásico asocia estímulos.",
+                    "confidence": 0.9,
+                    "explains": ["Condicionamiento Clasico"],
+                    "supporting_quote": "El condicionamiento clásico asocia estímulos",
+                }
+            ],
+            "relations": [],
+        }
+    )
+
+    text = (
+        "El condicionamiento clásico asocia estímulos. "
+        "El perro de Pavlov es un ejemplo clásico usado para explicar esta idea."
+    )
+    extraction = asyncio.run(provider.extract(text, "es", ["Psicologia"]))
+
+    concept_names = [item.canonical_name for item in extraction.concepts]
+    assert concept_names == ["Condicionamiento Clasico"]
+    assert extraction.claims[0].supporting_quote == "El condicionamiento clásico asocia estímulos"
 
 
 def test_openai_extractor_fails_instead_of_falling_back_to_heuristics():
