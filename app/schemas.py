@@ -83,6 +83,142 @@ class LinkConceptsRequest(BaseModel):
         return relation
 
 
+class EpisodeDeletionPreviewRequest(BaseModel):
+    episode_id: str | None = Field(default=None, min_length=1)
+    job_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_reference(self) -> "EpisodeDeletionPreviewRequest":
+        provided = [name for name, value in (("episode_id", self.episode_id), ("job_id", self.job_id)) if value]
+        if len(provided) != 1:
+            raise ValueError("exactly one of episode_id or job_id must be provided")
+        return self
+
+
+class EpisodeDeletionExecuteRequest(EpisodeDeletionPreviewRequest):
+    confirm: bool = False
+
+    @model_validator(mode="after")
+    def validate_confirm(self) -> "EpisodeDeletionExecuteRequest":
+        if self.confirm is not True:
+            raise ValueError("confirm must be true")
+        return self
+
+
+class RelationDeletionPreviewRequest(BaseModel):
+    from_: str = Field(alias="from", min_length=1)
+    relation: str
+    to: str = Field(min_length=1)
+    evidence_episode_id: str | None = Field(default=None, min_length=1)
+    delete_all_matching: bool = False
+
+    @field_validator("relation")
+    @classmethod
+    def validate_relation(cls, value: str) -> str:
+        relation = value.strip().upper()
+        if relation not in ALLOWED_RELATIONS:
+            raise ValueError(f"unsupported relation: {relation}")
+        return relation
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "RelationDeletionPreviewRequest":
+        if self.evidence_episode_id and self.delete_all_matching:
+            raise ValueError("delete_all_matching cannot be combined with evidence_episode_id")
+        return self
+
+
+class RelationDeletionExecuteRequest(RelationDeletionPreviewRequest):
+    confirm: bool = False
+
+    @model_validator(mode="after")
+    def validate_confirm(self) -> "RelationDeletionExecuteRequest":
+        if self.confirm is not True:
+            raise ValueError("confirm must be true")
+        return self
+
+
+class EpisodeDeletionResolvedReference(BaseModel):
+    input_type: Literal["episode_id", "job_id"]
+    input_value: str
+    resolved_episode_id: str
+    resolved_job_ids: list[str] = Field(default_factory=list)
+
+
+class EpisodeDeletionImpactCounts(BaseModel):
+    episodes: int = 0
+    jobs: int = 0
+    pedagogical_evidence: int = 0
+    relations: int = 0
+    concept_mentions: int = 0
+    claim_support_links: int = 0
+    orphan_claims: int = 0
+    preserved_claims: int = 0
+    claim_explain_links: int = 0
+
+
+class EpisodeDeletionImpact(BaseModel):
+    counts: EpisodeDeletionImpactCounts
+    episode_ids: list[str] = Field(default_factory=list)
+    job_ids: list[str] = Field(default_factory=list)
+    pedagogical_evidence_ids: list[str] = Field(default_factory=list)
+    relation_uids: list[str] = Field(default_factory=list)
+    mentioned_concept_uids: list[str] = Field(default_factory=list)
+    supported_claim_uids: list[str] = Field(default_factory=list)
+    orphan_claim_uids: list[str] = Field(default_factory=list)
+    preserved_claim_uids: list[str] = Field(default_factory=list)
+    claim_explain_link_uids: list[str] = Field(default_factory=list)
+
+
+class EpisodeDeletionPreviewResponse(BaseModel):
+    resolved_reference: EpisodeDeletionResolvedReference
+    can_execute: bool = True
+    warnings: list[str] = Field(default_factory=list)
+    impact: EpisodeDeletionImpact
+
+
+class EpisodeDeletionExecuteResponse(BaseModel):
+    status: Literal["deleted"] = "deleted"
+    resolved_reference: EpisodeDeletionResolvedReference
+    warnings: list[str] = Field(default_factory=list)
+    impact: EpisodeDeletionImpact
+
+
+class RelationDeletionResolvedReference(BaseModel):
+    input_from: str
+    input_to: str
+    from_uid: str
+    from_name: str
+    relation: str
+    to_uid: str
+    to_name: str
+    matched_relation_uids: list[str] = Field(default_factory=list)
+    matched_evidence_episode_ids: list[str] = Field(default_factory=list)
+    unscoped_match_count: int = 0
+
+
+class RelationDeletionImpactCounts(BaseModel):
+    relations: int = 0
+
+
+class RelationDeletionImpact(BaseModel):
+    counts: RelationDeletionImpactCounts
+    relation_uids: list[str] = Field(default_factory=list)
+
+
+class RelationDeletionPreviewResponse(BaseModel):
+    resolved_reference: RelationDeletionResolvedReference
+    can_execute: bool = True
+    warnings: list[str] = Field(default_factory=list)
+    impact: RelationDeletionImpact
+
+
+class RelationDeletionExecuteResponse(BaseModel):
+    status: Literal["deleted"] = "deleted"
+    resolved_reference: RelationDeletionResolvedReference
+    warnings: list[str] = Field(default_factory=list)
+    impact: RelationDeletionImpact
+
+
 class SearchCandidatesRequest(BaseModel):
     query: str = Field(min_length=1)
     domain_hint: str | None = None

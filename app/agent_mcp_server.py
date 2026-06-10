@@ -100,6 +100,42 @@ class AgentUpstreamProtocol(Protocol):
         evidence_episode_id: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def preview_delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        confirm: bool = True,
+    ) -> dict[str, Any]: ...
+
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> dict[str, Any]: ...
+
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+        confirm: bool = True,
+    ) -> dict[str, Any]: ...
+
     async def get_neighborhood(self, *, concept: str, depth: int = 1) -> dict[str, Any]: ...
 
     async def get_pedagogical_context(
@@ -450,6 +486,71 @@ def create_agent_mcp_server(
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 
+    @mcp.tool(name="kg_preview_delete_episode_content")
+    async def kg_preview_delete_episode_content(
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Preview the exact impact of deleting one ingested episode or job."""
+        try:
+            return await upstream.preview_delete_episode_content(episode_id=episode_id, job_id=job_id)
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_delete_episode_content")
+    async def kg_delete_episode_content(
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        """Delete one ingested episode or job after client-side human confirmation."""
+        try:
+            return await upstream.delete_episode_content(episode_id=episode_id, job_id=job_id, confirm=confirm)
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_preview_delete_relation")
+    async def kg_preview_delete_relation(
+        from_: Annotated[str, Field(min_length=1)],
+        relation: Annotated[str, Field(min_length=1)],
+        to: Annotated[str, Field(min_length=1)],
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> dict[str, Any]:
+        """Preview the exact impact of deleting one relation instance or all matching instances."""
+        try:
+            return await upstream.preview_delete_relation(
+                from_ref=from_,
+                relation=relation,
+                to_ref=to,
+                evidence_episode_id=evidence_episode_id,
+                delete_all_matching=delete_all_matching,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_delete_relation")
+    async def kg_delete_relation(
+        from_: Annotated[str, Field(min_length=1)],
+        relation: Annotated[str, Field(min_length=1)],
+        to: Annotated[str, Field(min_length=1)],
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        """Delete one relation instance or all matching instances after client-side confirmation."""
+        try:
+            return await upstream.delete_relation(
+                from_ref=from_,
+                relation=relation,
+                to_ref=to,
+                evidence_episode_id=evidence_episode_id,
+                delete_all_matching=delete_all_matching,
+                confirm=confirm,
+            )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
     @mcp.tool(name="kg_get_neighborhood")
     async def kg_get_neighborhood(
         concept: Annotated[str, Field(min_length=1)],
@@ -651,24 +752,26 @@ def create_agent_mcp_server(
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 
-    link_tool = mcp._tool_manager.get_tool("kg_link_concepts")
-    if link_tool is not None:
-        original_run = link_tool.run
+    for tool_name in ("kg_link_concepts", "kg_preview_delete_relation", "kg_delete_relation"):
+        tool = mcp._tool_manager.get_tool(tool_name)
+        if tool is None:
+            continue
+        original_run = tool.run
 
-        async def run_link_tool(arguments: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        async def run_tool(arguments: dict[str, Any], *args: Any, __original_run: Any = original_run, **kwargs: Any) -> Any:
             translated = dict(arguments)
             if "from" in translated and "from_" not in translated:
                 translated["from_"] = translated.pop("from")
-            return await original_run(translated, *args, **kwargs)
+            return await __original_run(translated, *args, **kwargs)
 
-        object.__setattr__(link_tool, "run", run_link_tool)
+        object.__setattr__(tool, "run", run_tool)
 
-        properties = link_tool.parameters.get("properties", {})
+        properties = tool.parameters.get("properties", {})
         if "from_" in properties:
             properties["from"] = properties.pop("from_")
-        required = link_tool.parameters.get("required")
+        required = tool.parameters.get("required")
         if isinstance(required, list):
-            link_tool.parameters["required"] = ["from" if item == "from_" else item for item in required]
+            tool.parameters["required"] = ["from" if item == "from_" else item for item in required]
 
     return mcp
 

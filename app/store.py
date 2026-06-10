@@ -25,6 +25,11 @@ from app.schemas import (
     ClaimRecord,
     ConceptRecord,
     CreateConceptRequest,
+    EpisodeDeletionExecuteResponse,
+    EpisodeDeletionImpact,
+    EpisodeDeletionImpactCounts,
+    EpisodeDeletionPreviewResponse,
+    EpisodeDeletionResolvedReference,
     EpisodeRecord,
     GetPedagogicalContextResponse,
     IngestionSummary,
@@ -41,6 +46,11 @@ from app.schemas import (
     PedagogicalEvaluationEvent,
     PedagogicalRecentStats,
     PedagogicalRecalculationTrace,
+    RelationDeletionExecuteResponse,
+    RelationDeletionImpact,
+    RelationDeletionImpactCounts,
+    RelationDeletionPreviewResponse,
+    RelationDeletionResolvedReference,
     SpacedRepetitionState,
     TutorContextBundle,
     TutorContextClaim,
@@ -88,6 +98,26 @@ class KnowledgeStore(Protocol):
     ) -> PedagogicalEvidenceRecord: ...
     async def create_relation(self, *, from_ref: str, relation: str, to_ref: str, evidence_episode_id: str | None, confidence: float | None = None) -> bool: ...
     async def attach_concept_evidence(self, *, concept_ref: str, episode_id: str, link_episode_claims: bool = True) -> AttachConceptEvidenceResponse: ...
+    async def preview_delete_episode_content(self, *, episode_id: str | None = None, job_id: str | None = None) -> EpisodeDeletionPreviewResponse: ...
+    async def delete_episode_content(self, *, episode_id: str | None = None, job_id: str | None = None) -> EpisodeDeletionExecuteResponse: ...
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> RelationDeletionPreviewResponse: ...
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> RelationDeletionExecuteResponse: ...
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None: ...
     async def link_claim_to_episode(self, claim_uid: str, episode_id: str, confidence: float | None = None) -> None: ...
     async def link_claim_to_concept(self, claim_uid: str, concept_uid: str, confidence: float | None = None) -> None: ...
@@ -136,6 +166,14 @@ class ConceptConflictError(ValueError):
 
 
 class ConceptUpsertTargetNotFoundError(ValueError):
+    pass
+
+
+class DeletionTargetNotFoundError(ValueError):
+    pass
+
+
+class RelationDeletionConflictError(ValueError):
     pass
 
 
@@ -739,6 +777,136 @@ class ArcadeKnowledgeStore:
             concept_uid=concept.uid,
             episode_id=episode_id,
             linked_claim_count=len(linked_claim_uids),
+        )
+
+    async def preview_delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> EpisodeDeletionPreviewResponse:
+        plan = await self._build_episode_deletion_plan(episode_id=episode_id, job_id=job_id)
+        return EpisodeDeletionPreviewResponse(
+            resolved_reference=plan["resolved_reference"],
+            can_execute=True,
+            warnings=plan["warnings"],
+            impact=plan["impact"],
+        )
+
+    async def delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> EpisodeDeletionExecuteResponse:
+        plan = await self._build_episode_deletion_plan(episode_id=episode_id, job_id=job_id)
+        resolved = plan["resolved_reference"]
+        impact = plan["impact"]
+
+        for relation_uid in impact.relation_uids:
+            from_uid, relation, to_uid, evidence_episode_id = self._parse_relation_uid(relation_uid)
+            await self._delete_relation_edge(
+                relation=relation,
+                from_uid=from_uid,
+                to_uid=to_uid,
+                evidence_episode_id=evidence_episode_id,
+                delete_all_matching=False,
+            )
+
+        for concept_uid in impact.mentioned_concept_uids:
+            await self._delete_edge(
+                edge_type="MENTIONED_IN",
+                from_type="Concept",
+                from_uid=concept_uid,
+                to_type="Episode",
+                to_uid=resolved.resolved_episode_id,
+            )
+
+        for claim_uid in impact.supported_claim_uids:
+            await self._delete_edge(
+                edge_type="SUPPORTED_BY",
+                from_type="Claim",
+                from_uid=claim_uid,
+                to_type="Episode",
+                to_uid=resolved.resolved_episode_id,
+            )
+
+        for evidence_uid in impact.pedagogical_evidence_ids:
+            await self.client.command("DELETE FROM PedagogicalEvidence WHERE uid = :uid", {"uid": evidence_uid})
+
+        for claim_uid in impact.orphan_claim_uids:
+            await self._delete_outgoing_edges(
+                edge_type="EXPLAINS",
+                from_type="Claim",
+                from_uid=claim_uid,
+                to_type="Concept",
+            )
+            await self.client.command("DELETE VERTEX Claim WHERE uid = :uid", {"uid": claim_uid})
+
+        for job_uid in impact.job_ids:
+            await self.client.command("DELETE FROM IngestionJob WHERE uid = :uid", {"uid": job_uid})
+
+        await self.client.command("DELETE VERTEX Episode WHERE uid = :uid", {"uid": resolved.resolved_episode_id})
+        return EpisodeDeletionExecuteResponse(
+            resolved_reference=resolved,
+            warnings=plan["warnings"],
+            impact=impact,
+        )
+
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> RelationDeletionPreviewResponse:
+        plan = await self._build_relation_deletion_plan(
+            from_ref=from_ref,
+            relation=relation,
+            to_ref=to_ref,
+            evidence_episode_id=evidence_episode_id,
+            delete_all_matching=delete_all_matching,
+        )
+        return RelationDeletionPreviewResponse(
+            resolved_reference=plan["resolved_reference"],
+            can_execute=plan["can_execute"],
+            warnings=plan["warnings"],
+            impact=plan["impact"],
+        )
+
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> RelationDeletionExecuteResponse:
+        plan = await self._build_relation_deletion_plan(
+            from_ref=from_ref,
+            relation=relation,
+            to_ref=to_ref,
+            evidence_episode_id=evidence_episode_id,
+            delete_all_matching=delete_all_matching,
+        )
+        if not plan["can_execute"]:
+            raise RelationDeletionConflictError("multiple matching relation instances require evidence_episode_id or delete_all_matching")
+
+        resolved = plan["resolved_reference"]
+        await self._delete_relation_edge(
+            relation=resolved.relation,
+            from_uid=resolved.from_uid,
+            to_uid=resolved.to_uid,
+            evidence_episode_id=evidence_episode_id,
+            delete_all_matching=delete_all_matching,
+        )
+        return RelationDeletionExecuteResponse(
+            resolved_reference=resolved,
+            warnings=plan["warnings"],
+            impact=plan["impact"],
         )
 
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None:
@@ -1716,6 +1884,287 @@ class ArcadeKnowledgeStore:
             evidence_episode_id=row.get("evidence_episode_id"),
         )
 
+    async def _build_episode_deletion_plan(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        input_type = "job_id" if job_id else "episode_id"
+        input_value = job_id or episode_id or ""
+
+        resolved_job_ids: list[str] = []
+        if job_id:
+            job = await self.get_job(job_id)
+            if job is None:
+                raise DeletionTargetNotFoundError("job not found")
+            episode_id = job.episode_id
+
+        episode = await self.get_episode(episode_id or "")
+        if episode is None:
+            raise DeletionTargetNotFoundError("episode not found")
+
+        job_rows = await self._safe_query(
+            "SELECT uid FROM IngestionJob WHERE episode_id = :episode_id",
+            {"episode_id": episode.uid},
+        )
+        resolved_job_ids = sorted(str(row.get("uid") or "") for row in job_rows if row.get("uid"))
+
+        evidence_rows = await self._safe_query(
+            "SELECT uid FROM PedagogicalEvidence WHERE episode_id = :episode_id",
+            {"episode_id": episode.uid},
+        )
+        pedagogical_evidence_ids = sorted(str(row.get("uid") or "") for row in evidence_rows if row.get("uid"))
+
+        mention_rows = await self._safe_query(
+            (
+                "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
+                ".in('MENTIONED_IN'){type: Concept, as: concept} "
+                "RETURN concept.uid as uid"
+            ),
+            {"uid": episode.uid},
+        )
+        mentioned_concept_uids = sorted(str(row.get("uid") or "") for row in mention_rows if row.get("uid"))
+
+        relation_rows = await self._safe_query(
+            (
+                "MATCH {type: Concept, as: source}.outE(){as: e, where: (evidence_episode_id = :episode_id)}"
+                ".inV(){type: Concept, as: target} "
+                "RETURN source.uid as from_uid, source.canonical_name as from_name, target.uid as to_uid, "
+                "target.canonical_name as to_name, type(e) as relation, e.evidence_episode_id as evidence_episode_id"
+            ),
+            {"episode_id": episode.uid},
+        )
+        relation_uids = sorted(
+            _tutor_relation_uid(
+                str(row.get("from_uid") or ""),
+                str(row.get("relation") or ""),
+                str(row.get("to_uid") or ""),
+                str(row.get("evidence_episode_id") or "") or None,
+            )
+            for row in relation_rows
+            if row.get("from_uid") and row.get("to_uid") and row.get("relation")
+        )
+
+        support_rows = await self._safe_query(
+            (
+                "MATCH {type: Episode, as: ep, where: (uid = :uid)}"
+                ".in('SUPPORTED_BY'){type: Claim, as: claim} "
+                "RETURN claim.uid as uid"
+            ),
+            {"uid": episode.uid},
+        )
+        supported_claim_uids = sorted(str(row.get("uid") or "") for row in support_rows if row.get("uid"))
+
+        orphan_claim_uids: list[str] = []
+        preserved_claim_uids: list[str] = []
+        claim_explain_link_uids: list[str] = []
+        for claim_uid in supported_claim_uids:
+            other_support = await self._safe_query(
+                (
+                    "MATCH {type: Claim, as: claim, where: (uid = :claim_uid)}"
+                    ".out('SUPPORTED_BY'){type: Episode, as: ep, where: (uid <> :episode_id)} "
+                    "RETURN ep.uid as uid LIMIT 1"
+                ),
+                {"claim_uid": claim_uid, "episode_id": episode.uid},
+            )
+            if other_support:
+                preserved_claim_uids.append(claim_uid)
+                continue
+            orphan_claim_uids.append(claim_uid)
+            explain_rows = await self._safe_query(
+                (
+                    "MATCH {type: Claim, as: claim, where: (uid = :claim_uid)}"
+                    ".out('EXPLAINS'){type: Concept, as: concept} "
+                    "RETURN concept.uid as uid"
+                ),
+                {"claim_uid": claim_uid},
+            )
+            claim_explain_link_uids.extend(
+                sorted(f"{claim_uid}|{str(row.get('uid') or '')}" for row in explain_rows if row.get("uid"))
+            )
+
+        impact = EpisodeDeletionImpact(
+            counts=EpisodeDeletionImpactCounts(
+                episodes=1,
+                jobs=len(resolved_job_ids),
+                pedagogical_evidence=len(pedagogical_evidence_ids),
+                relations=len(relation_uids),
+                concept_mentions=len(mentioned_concept_uids),
+                claim_support_links=len(supported_claim_uids),
+                orphan_claims=len(orphan_claim_uids),
+                preserved_claims=len(preserved_claim_uids),
+                claim_explain_links=len(claim_explain_link_uids),
+            ),
+            episode_ids=[episode.uid],
+            job_ids=resolved_job_ids,
+            pedagogical_evidence_ids=pedagogical_evidence_ids,
+            relation_uids=relation_uids,
+            mentioned_concept_uids=mentioned_concept_uids,
+            supported_claim_uids=supported_claim_uids,
+            orphan_claim_uids=sorted(orphan_claim_uids),
+            preserved_claim_uids=sorted(preserved_claim_uids),
+            claim_explain_link_uids=sorted(claim_explain_link_uids),
+        )
+        return {
+            "resolved_reference": EpisodeDeletionResolvedReference(
+                input_type=input_type,  # type: ignore[arg-type]
+                input_value=input_value,
+                resolved_episode_id=episode.uid,
+                resolved_job_ids=resolved_job_ids,
+            ),
+            "warnings": [],
+            "impact": impact,
+        }
+
+    async def _build_relation_deletion_plan(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None,
+        delete_all_matching: bool,
+    ) -> dict[str, Any]:
+        from_concept = await self.get_concept(from_ref)
+        to_concept = await self.get_concept(to_ref)
+        if not from_concept or not to_concept:
+            raise DeletionTargetNotFoundError("source or target concept not found")
+
+        match_rows = await self._safe_query(
+            (
+                f"MATCH {{type: Concept, as: source, where: (uid = :from_uid)}}"
+                f".outE('{relation}'){{as: e}}.inV(){{type: Concept, as: target, where: (uid = :to_uid)}} "
+                "RETURN e.evidence_episode_id as evidence_episode_id"
+            ),
+            {"from_uid": from_concept.uid, "to_uid": to_concept.uid},
+        )
+        if not match_rows:
+            raise DeletionTargetNotFoundError("relation not found")
+
+        all_relation_uids = sorted(
+            _tutor_relation_uid(
+                from_concept.uid,
+                relation,
+                to_concept.uid,
+                str(row.get("evidence_episode_id") or "") or None,
+            )
+            for row in match_rows
+        )
+        matched_episode_ids = sorted(
+            {str(row.get("evidence_episode_id") or "") for row in match_rows if row.get("evidence_episode_id")}
+        )
+
+        if evidence_episode_id:
+            relation_uids = [
+                relation_uid
+                for relation_uid in all_relation_uids
+                if relation_uid == _tutor_relation_uid(from_concept.uid, relation, to_concept.uid, evidence_episode_id)
+            ]
+            if not relation_uids:
+                raise DeletionTargetNotFoundError("relation not found")
+            can_execute = True
+            warnings: list[str] = []
+        elif delete_all_matching or len(all_relation_uids) == 1:
+            relation_uids = list(all_relation_uids)
+            can_execute = True
+            warnings = []
+        else:
+            relation_uids = list(all_relation_uids)
+            can_execute = False
+            warnings = ["multiple_relation_instances_require_scope"]
+
+        return {
+            "resolved_reference": RelationDeletionResolvedReference(
+                input_from=from_ref,
+                input_to=to_ref,
+                from_uid=from_concept.uid,
+                from_name=from_concept.canonical_name,
+                relation=relation,
+                to_uid=to_concept.uid,
+                to_name=to_concept.canonical_name,
+                matched_relation_uids=all_relation_uids,
+                matched_evidence_episode_ids=matched_episode_ids,
+                unscoped_match_count=len(all_relation_uids),
+            ),
+            "can_execute": can_execute,
+            "warnings": warnings,
+            "impact": RelationDeletionImpact(
+                counts=RelationDeletionImpactCounts(relations=len(relation_uids)),
+                relation_uids=relation_uids,
+            ),
+        }
+
+    async def _delete_edge(
+        self,
+        *,
+        edge_type: str,
+        from_type: str,
+        from_uid: str,
+        to_type: str,
+        to_uid: str,
+    ) -> None:
+        await self.client.command(
+            (
+                f"DELETE EDGE {edge_type} "
+                f"FROM (SELECT FROM {from_type} WHERE uid = :from_uid) "
+                f"TO (SELECT FROM {to_type} WHERE uid = :to_uid)"
+            ),
+            {"from_uid": from_uid, "to_uid": to_uid},
+        )
+
+    async def _delete_outgoing_edges(
+        self,
+        *,
+        edge_type: str,
+        from_type: str,
+        from_uid: str,
+        to_type: str,
+    ) -> None:
+        target_rows = await self._safe_query(
+            (
+                f"MATCH {{type: {from_type}, as: source, where: (uid = :from_uid)}}"
+                f".out('{edge_type}'){{type: {to_type}, as: target}} RETURN target.uid as uid"
+            ),
+            {"from_uid": from_uid},
+        )
+        for row in target_rows:
+            target_uid = str(row.get("uid") or "")
+            if not target_uid:
+                continue
+            await self._delete_edge(
+                edge_type=edge_type,
+                from_type=from_type,
+                from_uid=from_uid,
+                to_type=to_type,
+                to_uid=target_uid,
+            )
+
+    async def _delete_relation_edge(
+        self,
+        *,
+        relation: str,
+        from_uid: str,
+        to_uid: str,
+        evidence_episode_id: str | None,
+        delete_all_matching: bool,
+    ) -> None:
+        command = (
+            f"DELETE EDGE {relation} "
+            "FROM (SELECT FROM Concept WHERE uid = :from_uid) "
+            "TO (SELECT FROM Concept WHERE uid = :to_uid)"
+        )
+        params: dict[str, Any] = {"from_uid": from_uid, "to_uid": to_uid}
+        if evidence_episode_id and not delete_all_matching:
+            command += " WHERE evidence_episode_id = :evidence_episode_id"
+            params["evidence_episode_id"] = evidence_episode_id
+        await self.client.command(command, params)
+
+    @staticmethod
+    def _parse_relation_uid(relation_uid: str) -> tuple[str, str, str, str | None]:
+        from_uid, relation, to_uid, evidence_episode_id = relation_uid.split("|", 3)
+        return from_uid, relation, to_uid, (evidence_episode_id or None)
+
     async def _safe_query(
         self,
         command: str,
@@ -2351,6 +2800,118 @@ class InMemoryKnowledgeStore:
             linked_claim_count=len(linked_claim_uids),
         )
 
+    async def preview_delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> EpisodeDeletionPreviewResponse:
+        plan = self._build_in_memory_episode_deletion_plan(episode_id=episode_id, job_id=job_id)
+        return EpisodeDeletionPreviewResponse(
+            resolved_reference=plan["resolved_reference"],
+            can_execute=True,
+            warnings=plan["warnings"],
+            impact=plan["impact"],
+        )
+
+    async def delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> EpisodeDeletionExecuteResponse:
+        plan = self._build_in_memory_episode_deletion_plan(episode_id=episode_id, job_id=job_id)
+        resolved = plan["resolved_reference"]
+        impact = plan["impact"]
+
+        for job_uid in impact.job_ids:
+            self.jobs.pop(job_uid, None)
+        for evidence_uid in impact.pedagogical_evidence_ids:
+            self.pedagogical_evidence.pop(evidence_uid, None)
+
+        mention_set = set(impact.mentioned_concept_uids)
+        self.concept_mentions = {
+            item for item in self.concept_mentions if not (item[1] == resolved.resolved_episode_id and item[0] in mention_set)
+        }
+
+        support_set = set(impact.supported_claim_uids)
+        self.claim_support = {
+            item for item in self.claim_support if not (item[1] == resolved.resolved_episode_id and item[0] in support_set)
+        }
+
+        relation_set = set(impact.relation_uids)
+        self.relations = {
+            item
+            for item in self.relations
+            if _tutor_relation_uid(item[0], item[1], item[2], item[3]) not in relation_set
+        }
+
+        orphan_set = set(impact.orphan_claim_uids)
+        self.claim_explains = {item for item in self.claim_explains if item[0] not in orphan_set}
+        for claim_uid in orphan_set:
+            self.claims.pop(claim_uid, None)
+
+        self.episodes.pop(resolved.resolved_episode_id, None)
+        return EpisodeDeletionExecuteResponse(
+            resolved_reference=resolved,
+            warnings=plan["warnings"],
+            impact=impact,
+        )
+
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> RelationDeletionPreviewResponse:
+        plan = self._build_in_memory_relation_deletion_plan(
+            from_ref=from_ref,
+            relation=relation,
+            to_ref=to_ref,
+            evidence_episode_id=evidence_episode_id,
+            delete_all_matching=delete_all_matching,
+        )
+        return RelationDeletionPreviewResponse(
+            resolved_reference=plan["resolved_reference"],
+            can_execute=plan["can_execute"],
+            warnings=plan["warnings"],
+            impact=plan["impact"],
+        )
+
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> RelationDeletionExecuteResponse:
+        plan = self._build_in_memory_relation_deletion_plan(
+            from_ref=from_ref,
+            relation=relation,
+            to_ref=to_ref,
+            evidence_episode_id=evidence_episode_id,
+            delete_all_matching=delete_all_matching,
+        )
+        if not plan["can_execute"]:
+            raise RelationDeletionConflictError("multiple matching relation instances require evidence_episode_id or delete_all_matching")
+
+        relation_set = set(plan["impact"].relation_uids)
+        self.relations = {
+            item
+            for item in self.relations
+            if _tutor_relation_uid(item[0], item[1], item[2], item[3]) not in relation_set
+        }
+        return RelationDeletionExecuteResponse(
+            resolved_reference=plan["resolved_reference"],
+            warnings=plan["warnings"],
+            impact=plan["impact"],
+        )
+
     async def link_concept_to_episode(self, concept_uid: str, episode_id: str, confidence: float | None = None) -> None:
         self.concept_mentions.add((concept_uid, episode_id))
 
@@ -2758,6 +3319,182 @@ class InMemoryKnowledgeStore:
             "submissions": submissions,
             "interaction_events": interaction_events,
             "block_result": block_result,
+        }
+
+    def _build_in_memory_episode_deletion_plan(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        input_type = "job_id" if job_id else "episode_id"
+        input_value = job_id or episode_id or ""
+        if job_id:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise DeletionTargetNotFoundError("job not found")
+            episode_id = job.episode_id
+
+        episode = self.episodes.get(episode_id or "")
+        if episode is None:
+            raise DeletionTargetNotFoundError("episode not found")
+
+        resolved_job_ids = sorted(job.uid for job in self.jobs.values() if job.episode_id == episode.uid)
+        pedagogical_evidence_ids = sorted(
+            record.uid for record in self.pedagogical_evidence.values() if record.episode_id == episode.uid
+        )
+        relation_uids = sorted(
+            _tutor_relation_uid(from_uid, relation, to_uid, evidence_episode_id)
+            for from_uid, relation, to_uid, evidence_episode_id in self.relations
+            if evidence_episode_id == episode.uid
+        )
+        mentioned_concept_uids = sorted(
+            concept_uid for concept_uid, mentioned_episode_id in self.concept_mentions if mentioned_episode_id == episode.uid
+        )
+        supported_claim_uids = sorted(
+            claim_uid for claim_uid, supported_episode_id in self.claim_support if supported_episode_id == episode.uid
+        )
+
+        orphan_claim_uids: list[str] = []
+        preserved_claim_uids: list[str] = []
+        claim_explain_link_uids: list[str] = []
+        for claim_uid in supported_claim_uids:
+            if any(
+                supported_claim_uid == claim_uid and supported_episode_id != episode.uid
+                for supported_claim_uid, supported_episode_id in self.claim_support
+            ):
+                preserved_claim_uids.append(claim_uid)
+                continue
+            orphan_claim_uids.append(claim_uid)
+            claim_explain_link_uids.extend(
+                sorted(
+                    f"{claim_uid}|{concept_uid}"
+                    for explained_claim_uid, concept_uid in self.claim_explains
+                    if explained_claim_uid == claim_uid
+                )
+            )
+
+        impact = EpisodeDeletionImpact(
+            counts=EpisodeDeletionImpactCounts(
+                episodes=1,
+                jobs=len(resolved_job_ids),
+                pedagogical_evidence=len(pedagogical_evidence_ids),
+                relations=len(relation_uids),
+                concept_mentions=len(mentioned_concept_uids),
+                claim_support_links=len(supported_claim_uids),
+                orphan_claims=len(orphan_claim_uids),
+                preserved_claims=len(preserved_claim_uids),
+                claim_explain_links=len(claim_explain_link_uids),
+            ),
+            episode_ids=[episode.uid],
+            job_ids=resolved_job_ids,
+            pedagogical_evidence_ids=pedagogical_evidence_ids,
+            relation_uids=relation_uids,
+            mentioned_concept_uids=mentioned_concept_uids,
+            supported_claim_uids=supported_claim_uids,
+            orphan_claim_uids=sorted(orphan_claim_uids),
+            preserved_claim_uids=sorted(preserved_claim_uids),
+            claim_explain_link_uids=sorted(claim_explain_link_uids),
+        )
+        return {
+            "resolved_reference": EpisodeDeletionResolvedReference(
+                input_type=input_type,  # type: ignore[arg-type]
+                input_value=input_value,
+                resolved_episode_id=episode.uid,
+                resolved_job_ids=resolved_job_ids,
+            ),
+            "warnings": [],
+            "impact": impact,
+        }
+
+    def _build_in_memory_relation_deletion_plan(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None,
+        delete_all_matching: bool,
+    ) -> dict[str, Any]:
+        from_concept = None
+        to_concept = None
+        normalized_from = concept_ref_to_normalized(from_ref)
+        normalized_to = concept_ref_to_normalized(to_ref)
+        for concept in self.concepts.values():
+            if from_concept is None and (
+                concept.uid == from_ref
+                or concept.normalized_name == normalized_from
+                or concept.canonical_name == from_ref
+                or any(normalize_text(alias) == normalized_from for alias in concept.aliases)
+            ):
+                from_concept = concept
+            if to_concept is None and (
+                concept.uid == to_ref
+                or concept.normalized_name == normalized_to
+                or concept.canonical_name == to_ref
+                or any(normalize_text(alias) == normalized_to for alias in concept.aliases)
+            ):
+                to_concept = concept
+        if from_concept is None or to_concept is None:
+            raise DeletionTargetNotFoundError("source or target concept not found")
+
+        all_relation_uids = sorted(
+            _tutor_relation_uid(edge_from_uid, edge_relation, edge_to_uid, edge_evidence_episode_id)
+            for edge_from_uid, edge_relation, edge_to_uid, edge_evidence_episode_id in self.relations
+            if edge_from_uid == from_concept.uid and edge_relation == relation and edge_to_uid == to_concept.uid
+        )
+        if not all_relation_uids:
+            raise DeletionTargetNotFoundError("relation not found")
+
+        matched_evidence_episode_ids = sorted(
+            {
+                edge_evidence_episode_id
+                for edge_from_uid, edge_relation, edge_to_uid, edge_evidence_episode_id in self.relations
+                if edge_from_uid == from_concept.uid
+                and edge_relation == relation
+                and edge_to_uid == to_concept.uid
+                and edge_evidence_episode_id
+            }
+        )
+
+        if evidence_episode_id:
+            relation_uids = [
+                relation_uid
+                for relation_uid in all_relation_uids
+                if relation_uid == _tutor_relation_uid(from_concept.uid, relation, to_concept.uid, evidence_episode_id)
+            ]
+            if not relation_uids:
+                raise DeletionTargetNotFoundError("relation not found")
+            can_execute = True
+            warnings: list[str] = []
+        elif delete_all_matching or len(all_relation_uids) == 1:
+            relation_uids = list(all_relation_uids)
+            can_execute = True
+            warnings = []
+        else:
+            relation_uids = list(all_relation_uids)
+            can_execute = False
+            warnings = ["multiple_relation_instances_require_scope"]
+
+        return {
+            "resolved_reference": RelationDeletionResolvedReference(
+                input_from=from_ref,
+                input_to=to_ref,
+                from_uid=from_concept.uid,
+                from_name=from_concept.canonical_name,
+                relation=relation,
+                to_uid=to_concept.uid,
+                to_name=to_concept.canonical_name,
+                matched_relation_uids=all_relation_uids,
+                matched_evidence_episode_ids=matched_evidence_episode_ids,
+                unscoped_match_count=len(all_relation_uids),
+            ),
+            "can_execute": can_execute,
+            "warnings": warnings,
+            "impact": RelationDeletionImpact(
+                counts=RelationDeletionImpactCounts(relations=len(relation_uids)),
+                relation_uids=relation_uids,
+            ),
         }
 
 

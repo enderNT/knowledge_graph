@@ -404,6 +404,75 @@ class MCPBackendClient:
             },
         )
 
+    async def preview_delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/deletions/episode/preview",
+            json={"episode_id": episode_id, "job_id": job_id},
+        )
+
+    async def delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/deletions/episode/execute",
+            json={"episode_id": episode_id, "job_id": job_id, "confirm": confirm},
+        )
+
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/deletions/relation/preview",
+            json={
+                "from": from_ref,
+                "relation": relation,
+                "to": to_ref,
+                "evidence_episode_id": evidence_episode_id,
+                "delete_all_matching": delete_all_matching,
+            },
+        )
+
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/v1/deletions/relation/execute",
+            json={
+                "from": from_ref,
+                "relation": relation,
+                "to": to_ref,
+                "evidence_episode_id": evidence_episode_id,
+                "delete_all_matching": delete_all_matching,
+                "confirm": confirm,
+            },
+        )
+
     async def get_neighborhood(self, *, concept: str, depth: int = 1) -> dict[str, Any]:
         return await self._request(
             "GET",

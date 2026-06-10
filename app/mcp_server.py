@@ -101,6 +101,42 @@ class MCPBackendProtocol(Protocol):
         evidence_episode_id: str | None = None,
     ) -> dict[str, Any]: ...
 
+    async def preview_delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        confirm: bool = True,
+    ) -> dict[str, Any]: ...
+
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> dict[str, Any]: ...
+
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+        confirm: bool = True,
+    ) -> dict[str, Any]: ...
+
     async def get_neighborhood(self, *, concept: str, depth: int = 1) -> dict[str, Any]: ...
 
     async def get_pedagogical_context(
@@ -378,6 +414,71 @@ def create_mcp_server(
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 
+    @mcp.tool(name="preview_delete_episode_content")
+    async def preview_delete_episode_content(
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Preview the exact impact of deleting one ingested episode or its ingestion job."""
+        try:
+            return await backend.preview_delete_episode_content(episode_id=episode_id, job_id=job_id)
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="delete_episode_content")
+    async def delete_episode_content(
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        """Delete one ingested episode or job after an explicit confirmation step in the client."""
+        try:
+            return await backend.delete_episode_content(episode_id=episode_id, job_id=job_id, confirm=confirm)
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="preview_delete_relation")
+    async def preview_delete_relation(
+        from_: Annotated[str, Field(min_length=1)],
+        relation: Annotated[str, Field(min_length=1)],
+        to: Annotated[str, Field(min_length=1)],
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> dict[str, Any]:
+        """Preview the exact impact of deleting one concept-to-concept relation instance or all matches."""
+        try:
+            return await backend.preview_delete_relation(
+                from_ref=from_,
+                relation=relation,
+                to_ref=to,
+                evidence_episode_id=evidence_episode_id,
+                delete_all_matching=delete_all_matching,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="delete_relation")
+    async def delete_relation(
+        from_: Annotated[str, Field(min_length=1)],
+        relation: Annotated[str, Field(min_length=1)],
+        to: Annotated[str, Field(min_length=1)],
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        """Delete one concept-to-concept relation instance or all matching instances after confirmation."""
+        try:
+            return await backend.delete_relation(
+                from_ref=from_,
+                relation=relation,
+                to_ref=to,
+                evidence_episode_id=evidence_episode_id,
+                delete_all_matching=delete_all_matching,
+                confirm=confirm,
+            )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
     @mcp.tool(name="get_neighborhood")
     async def get_neighborhood(
         concept: Annotated[str, Field(min_length=1)],
@@ -579,24 +680,26 @@ def create_mcp_server(
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 
-    link_tool = mcp._tool_manager.get_tool("link_concepts")
-    if link_tool is not None:
-        original_run = link_tool.run
+    for tool_name in ("link_concepts", "preview_delete_relation", "delete_relation"):
+        tool = mcp._tool_manager.get_tool(tool_name)
+        if tool is None:
+            continue
+        original_run = tool.run
 
-        async def run_link_tool(arguments: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        async def run_tool(arguments: dict[str, Any], *args: Any, __original_run: Any = original_run, **kwargs: Any) -> Any:
             translated = dict(arguments)
             if "from" in translated and "from_" not in translated:
                 translated["from_"] = translated.pop("from")
-            return await original_run(translated, *args, **kwargs)
+            return await __original_run(translated, *args, **kwargs)
 
-        object.__setattr__(link_tool, "run", run_link_tool)
+        object.__setattr__(tool, "run", run_tool)
 
-        properties = link_tool.parameters.get("properties", {})
+        properties = tool.parameters.get("properties", {})
         if "from_" in properties:
             properties["from"] = properties.pop("from_")
-        required = link_tool.parameters.get("required")
+        required = tool.parameters.get("required")
         if isinstance(required, list):
-            link_tool.parameters["required"] = ["from" if item == "from_" else item for item in required]
+            tool.parameters["required"] = ["from" if item == "from_" else item for item in required]
 
     return mcp
 

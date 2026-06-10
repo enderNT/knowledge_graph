@@ -243,6 +243,56 @@ async def test_attach_concept_evidence_request_shape():
 
 
 @pytest.mark.anyio
+async def test_preview_delete_episode_content_request_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/deletions/episode/preview"
+        assert json.loads(request.content.decode()) == {
+            "episode_id": "ep_1",
+            "job_id": None,
+        }
+        return _response(request, 200, {"resolved_reference": {"resolved_episode_id": "ep_1"}, "can_execute": True, "warnings": [], "impact": {"counts": {"episodes": 1}}})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.preview_delete_episode_content(episode_id="ep_1")
+    finally:
+        await client.close()
+
+    assert result["can_execute"] is True
+
+
+@pytest.mark.anyio
+async def test_delete_relation_request_shape():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v1/deletions/relation/execute"
+        assert json.loads(request.content.decode()) == {
+            "from": "cn_1",
+            "relation": "RELATED_TO",
+            "to": "cn_2",
+            "evidence_episode_id": "ep_1",
+            "delete_all_matching": False,
+            "confirm": True,
+        }
+        return _response(request, 200, {"status": "deleted", "resolved_reference": {"from_uid": "cn_1", "to_uid": "cn_2"}, "warnings": [], "impact": {"counts": {"relations": 1}, "relation_uids": ["cn_1|RELATED_TO|cn_2|ep_1"]}})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        result = await client.delete_relation(
+            from_ref="cn_1",
+            relation="RELATED_TO",
+            to_ref="cn_2",
+            evidence_episode_id="ep_1",
+            confirm=True,
+        )
+    finally:
+        await client.close()
+
+    assert result["status"] == "deleted"
+
+
+@pytest.mark.anyio
 async def test_reset_knowledge_base_request_shape():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

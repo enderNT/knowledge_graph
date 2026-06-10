@@ -16,6 +16,7 @@ class FakeKnowledgeBackendClient:
     def __init__(self) -> None:
         self.ready = (True, {"status": "ready"})
         self.last_link_call: dict[str, Any] | None = None
+        self.last_preview_delete_relation_call: dict[str, Any] | None = None
         self.last_start_adaptive_payload: dict[str, Any] | None = None
 
     async def ingest_fragment_and_wait(self, **_: Any) -> dict[str, Any]:
@@ -275,6 +276,68 @@ class FakeKnowledgeBackendClient:
     async def link_concepts(self, **kwargs: Any) -> dict[str, Any]:
         self.last_link_call = kwargs
         return {"status": "linked"}
+
+    async def preview_delete_episode_content(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "resolved_reference": {
+                "input_type": "episode_id",
+                "input_value": kwargs.get("episode_id") or kwargs.get("job_id"),
+                "resolved_episode_id": "ep_1",
+                "resolved_job_ids": ["job_1"],
+            },
+            "can_execute": True,
+            "warnings": [],
+            "impact": {
+                "counts": {
+                    "episodes": 1,
+                    "jobs": 1,
+                    "pedagogical_evidence": 1,
+                    "relations": 1,
+                    "concept_mentions": 1,
+                    "claim_support_links": 1,
+                    "orphan_claims": 1,
+                    "preserved_claims": 0,
+                    "claim_explain_links": 1,
+                },
+                "episode_ids": ["ep_1"],
+                "job_ids": ["job_1"],
+                "pedagogical_evidence_ids": ["pev_1"],
+                "relation_uids": ["cn_1|CONTRASTS_WITH|cn_2|ep_1"],
+                "mentioned_concept_uids": ["cn_1"],
+                "supported_claim_uids": ["cl_1"],
+                "orphan_claim_uids": ["cl_1"],
+                "preserved_claim_uids": [],
+                "claim_explain_link_uids": ["cl_1|cn_1"],
+            },
+        }
+
+    async def delete_episode_content(self, **kwargs: Any) -> dict[str, Any]:
+        preview = await self.preview_delete_episode_content(**kwargs)
+        return {"status": "deleted", **preview}
+
+    async def preview_delete_relation(self, **kwargs: Any) -> dict[str, Any]:
+        self.last_preview_delete_relation_call = kwargs
+        return {
+            "resolved_reference": {
+                "input_from": kwargs["from_ref"],
+                "input_to": kwargs["to_ref"],
+                "from_uid": "cn_1",
+                "from_name": "Condicionamiento clásico",
+                "relation": kwargs["relation"],
+                "to_uid": "cn_2",
+                "to_name": "Condicionamiento operante",
+                "matched_relation_uids": ["cn_1|RELATED_TO|cn_2|ep_1"],
+                "matched_evidence_episode_ids": ["ep_1"],
+                "unscoped_match_count": 1,
+            },
+            "can_execute": True,
+            "warnings": [],
+            "impact": {"counts": {"relations": 1}, "relation_uids": ["cn_1|RELATED_TO|cn_2|ep_1"]},
+        }
+
+    async def delete_relation(self, **kwargs: Any) -> dict[str, Any]:
+        preview = await self.preview_delete_relation(**kwargs)
+        return {"status": "deleted", **preview}
 
     async def get_neighborhood(self, **kwargs: Any) -> dict[str, Any]:
         return {
@@ -631,7 +694,7 @@ async def client_session(
 
 
 @pytest.mark.anyio
-async def test_agent_mcp_exposes_exactly_twenty_four_tools(client_session):
+async def test_agent_mcp_exposes_exactly_twenty_eight_tools(client_session):
     tools = await client_session.list_tools()
     assert sorted(tool.name for tool in tools.tools) == [
         "evaluate_answer",
@@ -641,12 +704,16 @@ async def test_agent_mcp_exposes_exactly_twenty_four_tools(client_session):
         "kg_add_knowledge_fragment",
         "kg_attach_concept_evidence",
         "kg_create_concept",
+        "kg_delete_episode_content",
+        "kg_delete_relation",
         "kg_get_learning_context",
         "kg_get_neighborhood",
         "kg_get_pedagogical_context",
         "kg_get_pedagogical_session_view",
         "kg_get_tutor_context",
         "kg_link_concepts",
+        "kg_preview_delete_episode_content",
+        "kg_preview_delete_relation",
         "kg_reset_knowledge_base",
         "kg_search_candidates",
         "kg_sr_apply_relief",
@@ -669,6 +736,7 @@ async def test_agent_mcp_exposes_exactly_twenty_four_tools(client_session):
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["study_mode"]["default"] == "hybrid"
     assert "from" in tool_map["kg_link_concepts"].inputSchema["properties"]
+    assert "from" in tool_map["kg_preview_delete_relation"].inputSchema["properties"]
     assert tool_map["kg_upsert_concept"].inputSchema["properties"]["uid"]["type"] == "string"
 
     descriptions = {tool.name: (tool.description or "").strip() for tool in tools.tools}
@@ -771,6 +839,20 @@ async def test_agent_passthrough_tools_preserve_shape_and_from_alias(
         "relation": "RELATED_TO",
         "to_ref": "cn_2",
         "evidence_episode_id": None,
+    }
+
+    preview_delete_relation = await client_session.call_tool(
+        "kg_preview_delete_relation",
+        {"from": "cn_1", "relation": "RELATED_TO", "to": "cn_2"},
+    )
+    assert preview_delete_relation.isError in {False, None}
+    assert preview_delete_relation.structuredContent["can_execute"] is True
+    assert knowledge_backend.last_preview_delete_relation_call == {
+        "from_ref": "cn_1",
+        "relation": "RELATED_TO",
+        "to_ref": "cn_2",
+        "evidence_episode_id": None,
+        "delete_all_matching": False,
     }
 
     learning_context = await client_session.call_tool(

@@ -108,6 +108,60 @@ class FakeBackendClient:
         self.create_result = {"concept": {"uid": "cn_strict"}, "created": True}
         self.attach_evidence_result = {"status": "attached", "concept_uid": "cn_1", "episode_id": "ep_1", "linked_claim_count": 2}
         self.link_result = {"status": "linked"}
+        self.preview_delete_episode_result = {
+            "resolved_reference": {
+                "input_type": "episode_id",
+                "input_value": "ep_1",
+                "resolved_episode_id": "ep_1",
+                "resolved_job_ids": ["job_1"],
+            },
+            "can_execute": True,
+            "warnings": [],
+            "impact": {
+                "counts": {
+                    "episodes": 1,
+                    "jobs": 1,
+                    "pedagogical_evidence": 1,
+                    "relations": 1,
+                    "concept_mentions": 1,
+                    "claim_support_links": 1,
+                    "orphan_claims": 1,
+                    "preserved_claims": 0,
+                    "claim_explain_links": 1,
+                },
+                "episode_ids": ["ep_1"],
+                "job_ids": ["job_1"],
+                "pedagogical_evidence_ids": ["pev_1"],
+                "relation_uids": ["cn_1|RELATED_TO|cn_2|ep_1"],
+                "mentioned_concept_uids": ["cn_1"],
+                "supported_claim_uids": ["cl_1"],
+                "orphan_claim_uids": ["cl_1"],
+                "preserved_claim_uids": [],
+                "claim_explain_link_uids": ["cl_1|cn_1"],
+            },
+        }
+        self.delete_episode_result = {
+            "status": "deleted",
+            **self.preview_delete_episode_result,
+        }
+        self.preview_delete_relation_result = {
+            "resolved_reference": {
+                "input_from": "cn_1",
+                "input_to": "cn_2",
+                "from_uid": "cn_1",
+                "from_name": "Memoria episódica",
+                "relation": "RELATED_TO",
+                "to_uid": "cn_2",
+                "to_name": "Memoria semántica",
+                "matched_relation_uids": ["cn_1|RELATED_TO|cn_2|ep_1"],
+                "matched_evidence_episode_ids": ["ep_1"],
+                "unscoped_match_count": 1,
+            },
+            "can_execute": True,
+            "warnings": [],
+            "impact": {"counts": {"relations": 1}, "relation_uids": ["cn_1|RELATED_TO|cn_2|ep_1"]},
+        }
+        self.delete_relation_result = {"status": "deleted", **self.preview_delete_relation_result}
         self.neighborhood_result = {"concept": {"uid": "cn_1"}, "nodes": [], "relations": [], "claims": [], "episodes": []}
         self.pedagogical_context_result = {
             "user_id": "user-1",
@@ -333,6 +387,18 @@ class FakeBackendClient:
             raise self.link_error
         return self.link_result
 
+    async def preview_delete_episode_content(self, **_: Any) -> dict[str, Any]:
+        return self.preview_delete_episode_result
+
+    async def delete_episode_content(self, **_: Any) -> dict[str, Any]:
+        return self.delete_episode_result
+
+    async def preview_delete_relation(self, **_: Any) -> dict[str, Any]:
+        return self.preview_delete_relation_result
+
+    async def delete_relation(self, **_: Any) -> dict[str, Any]:
+        return self.delete_relation_result
+
     async def get_neighborhood(self, **_: Any) -> dict[str, Any]:
         return self.neighborhood_result
 
@@ -423,7 +489,7 @@ async def client_session() -> AsyncGenerator[Any]:
 
 
 @pytest.mark.anyio
-async def test_mcp_server_exposes_exactly_twenty_one_tools(client_session):
+async def test_mcp_server_exposes_exactly_twenty_five_tools(client_session):
     tools = await client_session.list_tools()
 
     assert sorted(tool.name for tool in tools.tools) == [
@@ -431,6 +497,8 @@ async def test_mcp_server_exposes_exactly_twenty_one_tools(client_session):
         "apply_prereq_relief",
         "attach_concept_evidence",
         "create_concept",
+        "delete_episode_content",
+        "delete_relation",
         "get_adaptive_session",
         "get_due_sr_items",
         "get_learning_context",
@@ -441,6 +509,8 @@ async def test_mcp_server_exposes_exactly_twenty_one_tools(client_session):
         "get_sr_stats",
         "get_tutor_context",
         "link_concepts",
+        "preview_delete_episode_content",
+        "preview_delete_relation",
         "reset_knowledge_base",
         "search_candidates",
         "start_adaptive_session",
@@ -460,6 +530,7 @@ async def test_mcp_server_exposes_exactly_twenty_one_tools(client_session):
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["language"]["default"] == "es"
     assert tool_map["start_adaptive_session"].inputSchema["properties"]["study_mode"]["default"] == "hybrid"
     assert "from" in tool_map["link_concepts"].inputSchema["properties"]
+    assert "from" in tool_map["preview_delete_relation"].inputSchema["properties"]
     assert "depth" in tool_map["get_neighborhood"].inputSchema["properties"]
 
 
@@ -558,6 +629,20 @@ async def test_mcp_server_translates_tool_results_and_errors():
             "source or target concept not found" in getattr(content, "text", "") for content in link.content
         )
 
+        preview_delete_episode = await session.call_tool(
+            "preview_delete_episode_content",
+            {"episode_id": "ep_1"},
+        )
+        assert preview_delete_episode.isError in {False, None}
+        assert preview_delete_episode.structuredContent["impact"]["counts"]["episodes"] == 1
+
+        delete_relation = await session.call_tool(
+            "delete_relation",
+            {"from": "cn_1", "relation": "RELATED_TO", "to": "cn_2", "confirm": True},
+        )
+        assert delete_relation.isError in {False, None}
+        assert delete_relation.structuredContent["status"] == "deleted"
+
 
 @pytest.mark.anyio
 async def test_mcp_streamable_http_client_works_with_documented_url():
@@ -587,6 +672,8 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
         "apply_prereq_relief",
         "attach_concept_evidence",
         "create_concept",
+        "delete_episode_content",
+        "delete_relation",
         "get_adaptive_session",
         "get_due_sr_items",
         "get_learning_context",
@@ -597,6 +684,8 @@ async def test_mcp_streamable_http_client_works_with_documented_url():
         "get_sr_stats",
         "get_tutor_context",
         "link_concepts",
+        "preview_delete_episode_content",
+        "preview_delete_relation",
         "reset_knowledge_base",
         "search_candidates",
         "start_adaptive_session",

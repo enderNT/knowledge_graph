@@ -59,6 +59,10 @@ class AgentMCPUpstreamClient:
             "get_tutor_context",
             "upsert_concept",
             "link_concepts",
+            "preview_delete_episode_content",
+            "delete_episode_content",
+            "preview_delete_relation",
+            "delete_relation",
             "get_neighborhood",
             "get_pedagogical_context",
             "update_pedagogical_context",
@@ -249,6 +253,71 @@ class AgentMCPUpstreamClient:
                 "relation": relation,
                 "to": to_ref,
                 "evidence_episode_id": evidence_episode_id,
+            },
+        )
+
+    async def preview_delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "preview_delete_episode_content",
+            {"episode_id": episode_id, "job_id": job_id},
+        )
+
+    async def delete_episode_content(
+        self,
+        *,
+        episode_id: str | None = None,
+        job_id: str | None = None,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "delete_episode_content",
+            {"episode_id": episode_id, "job_id": job_id, "confirm": confirm},
+        )
+
+    async def preview_delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "preview_delete_relation",
+            {
+                "from": from_ref,
+                "relation": relation,
+                "to": to_ref,
+                "evidence_episode_id": evidence_episode_id,
+                "delete_all_matching": delete_all_matching,
+            },
+        )
+
+    async def delete_relation(
+        self,
+        *,
+        from_ref: str,
+        relation: str,
+        to_ref: str,
+        evidence_episode_id: str | None = None,
+        delete_all_matching: bool = False,
+        confirm: bool = True,
+    ) -> dict[str, Any]:
+        return await self.call_tool(
+            "delete_relation",
+            {
+                "from": from_ref,
+                "relation": relation,
+                "to": to_ref,
+                "evidence_episode_id": evidence_episode_id,
+                "delete_all_matching": delete_all_matching,
+                "confirm": confirm,
             },
         )
 
