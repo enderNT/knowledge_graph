@@ -7,6 +7,8 @@ services:
     depends_on:
       arcadedb:
         condition: service_healthy
+      anthropic-gateway:
+        condition: service_healthy
     expose:
       - "8000"
     restart: unless-stopped
@@ -22,6 +24,29 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  anthropic-gateway:
+    build:
+      context: ./anthropic-gateway
+    env_file:
+      - ${ENV_FILE:-.env}
+    expose:
+      - "8081"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-O",
+          "-",
+          "http://127.0.0.1:8081/health/ready",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   mcp:
     build:

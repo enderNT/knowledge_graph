@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from app.ai_provider import OpenAICompatibleProvider, StubAIProvider
+from app.ai_provider import AnthropicGatewayProvider, OpenAICompatibleProvider, StubAIProvider, build_ai_provider
 from app.config import Settings
 from app.utils import fit_embedding_dimensions
 
@@ -29,6 +29,27 @@ class _CapturedClient:
     async def post(self, *_args, **kwargs):
         self.requests.append(kwargs)
         return _CapturedResponse(self._content)
+
+
+class _GatewayCapturedResponse:
+    def __init__(self, content: dict[str, object]) -> None:
+        self._content = content
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"content_json": self._content}
+
+
+class _GatewayCapturedClient:
+    def __init__(self, content: dict[str, object]) -> None:
+        self._content = content
+        self.requests: list[dict[str, object]] = []
+
+    async def post(self, *_args, **kwargs):
+        self.requests.append(kwargs)
+        return _GatewayCapturedResponse(self._content)
 
 
 def test_stub_extractor_prefers_named_entities_and_structured_sections(settings):
@@ -304,4 +325,184 @@ def test_openai_extractor_fails_instead_of_falling_back_to_heuristics():
     provider.client = _FailingClient()
 
     with pytest.raises(ValueError, match="llm extraction failed"):
+        asyncio.run(provider.extract("Texto de prueba", "es", ["General"]))
+
+
+def test_settings_accept_anthropic_provider():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+    )
+
+    assert settings.ai_provider == "anthropic"
+
+
+def test_build_ai_provider_requires_embedding_provider_for_anthropic():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-test",
+    )
+
+    with pytest.raises(ValueError, match="EMBEDDING_PROVIDER is required when AI_PROVIDER=anthropic"):
+        build_ai_provider(settings)
+
+
+def test_build_ai_provider_returns_anthropic_gateway_provider():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-test",
+    )
+
+    provider = build_ai_provider(settings)
+
+    assert isinstance(provider, AnthropicGatewayProvider)
+
+
+def test_anthropic_gateway_extractor_sanitizes_response():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-test",
+        embedding_dimensions=16,
+    )
+    provider = AnthropicGatewayProvider(settings)
+    provider.client = _GatewayCapturedClient(
+        {
+            "domain": "Bases de Datos",
+            "topics": ["Bases de Datos"],
+            "concepts": [
+                {
+                    "canonical_name": "Normalizacion",
+                    "aliases": [],
+                    "description": "Reduce redundancia.",
+                    "evidence_quotes": ["La normalización evita duplicidad"],
+                    "confidence": 0.95,
+                }
+            ],
+            "claims": [
+                {
+                    "text": "La normalización evita duplicidad en tablas relacionadas.",
+                    "confidence": 0.88,
+                    "explains": ["Normalizacion"],
+                    "supporting_quote": "La normalización evita duplicidad",
+                }
+            ],
+            "relations": [],
+        }
+    )
+
+    text = (
+        "La normalización evita duplicidad. "
+        "En el ejemplo aparecen tablas users y orders, el campo customer_id y el literal 'PENDING'."
+    )
+    extraction = asyncio.run(provider.extract(text, "es", ["Bases de Datos"]))
+
+    assert [item.canonical_name for item in extraction.concepts] == ["Normalizacion"]
+    request = provider.client.requests[0]
+    assert request["json"]["model"] == "claude-test"
+    assert request["json"]["user_payload_json"]["text"] == text
+
+
+def test_anthropic_gateway_vetting_validates_response():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-test",
+        embedding_dimensions=16,
+    )
+    provider = AnthropicGatewayProvider(settings)
+    provider.client = _GatewayCapturedClient(
+        {
+            "statement": "La normalizacion reduce duplicidad.",
+            "supporting_quote": "La normalización evita duplicidad",
+            "kind": "claim",
+            "status": "approved",
+            "review_notes": [],
+        }
+    )
+
+    decision = asyncio.run(
+        provider.vet_pedagogical_evidence(
+            concept_name="Normalizacion",
+            claim_text="La normalizacion reduce duplicidad.",
+            supporting_quote="La normalización evita duplicidad",
+            language="es",
+        )
+    )
+
+    assert decision.status == "approved"
+    request = provider.client.requests[0]
+    assert request["json"]["temperature"] == 0.1
+    assert request["json"]["user_payload_json"]["concept_name"] == "Normalizacion"
+
+
+def test_anthropic_gateway_extract_reports_invalid_gateway_payload():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-test",
+        embedding_dimensions=16,
+    )
+    provider = AnthropicGatewayProvider(settings)
+
+    class _InvalidGatewayResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"content_json": ["not-an-object"]}
+
+    class _InvalidGatewayClient:
+        async def post(self, *_args, **_kwargs):
+            return _InvalidGatewayResponse()
+
+    provider.client = _InvalidGatewayClient()
+
+    with pytest.raises(ValueError, match="llm extraction failed: gateway content_json must be a JSON object"):
+        asyncio.run(provider.extract("Texto de prueba", "es", ["General"]))
+
+
+def test_anthropic_gateway_extract_reports_http_errors():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-test",
+        embedding_dimensions=16,
+    )
+    provider = AnthropicGatewayProvider(settings)
+
+    class _FailingGatewayClient:
+        async def post(self, *_args, **_kwargs):
+            raise ValueError("gateway boom")
+
+    provider.client = _FailingGatewayClient()
+
+    with pytest.raises(ValueError, match="llm extraction failed: gateway boom"):
         asyncio.run(provider.extract("Texto de prueba", "es", ["General"]))

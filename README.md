@@ -19,8 +19,9 @@ Stack semántico en Python con tres servicios: una API REST privada en `FastAPI`
 - `agent-mcp` → `knowledge mcp` interno (`Authorization: Bearer <KNOWLEDGE_MCP_BEARER_TOKEN>`)
 - `knowledge mcp` → `api` privada (`X-API-Key: <KG_API_KEY>`)
 - `api` → `arcadedb` interna
+- `api` → `anthropic-gateway` interno cuando `AI_PROVIDER=anthropic`
 
-Por defecto, en Docker Compose solo `agent-mcp` se publica; `mcp`, `api` y `arcadedb` quedan en red interna.
+Por defecto, en Docker Compose solo `agent-mcp` se publica; `mcp`, `api`, `arcadedb` y `anthropic-gateway` quedan en red interna.
 
 ## Endpoints REST
 
@@ -111,11 +112,41 @@ Comportamiento de esta iteración:
 4. El `knowledge MCP` queda interno en `http://mcp:9000/mcp`.
 5. La API REST queda solo dentro de la red interna del compose.
 
-Mientras `AI_PROVIDER=stub`, no hace falta proveedor externo. Para usar un proveedor OpenAI-compatible:
+Mientras `AI_PROVIDER=stub`, no hace falta proveedor externo.
+
+Matriz de proveedores:
+
+- `AI_PROVIDER=stub`: extracción heurística local + embeddings locales
+- `AI_PROVIDER=openai_compatible`: extracción LLM y embeddings por OpenAI-compatible
+- `AI_PROVIDER=anthropic`: extracción LLM por `anthropic-gateway` + embeddings por `EMBEDDING_PROVIDER`
+
+Para usar un proveedor OpenAI-compatible:
 
 - Cambia `AI_PROVIDER=openai_compatible`
 - Define `OPENAI_API_KEY`
 - Ajusta `EMBEDDING_DIMENSIONS` para que coincida con tu modelo de embeddings
+
+Para usar Anthropic vía gateway Go:
+
+- Cambia `AI_PROVIDER=anthropic`
+- Define `EMBEDDING_PROVIDER=stub` o `EMBEDDING_PROVIDER=openai_compatible`
+- Define `ANTHROPIC_GATEWAY_BEARER_TOKEN`
+- Define `ANTHROPIC_API_KEY`
+- Define `ANTHROPIC_CHAT_MODEL`
+- Opcionalmente ajusta `ANTHROPIC_GATEWAY_BASE_URL` y `ANTHROPIC_TIMEOUT_SECONDS`
+
+Ejemplo mínimo:
+
+```env
+AI_PROVIDER=anthropic
+EMBEDDING_PROVIDER=openai_compatible
+OPENAI_API_KEY=sk-...
+OPENAI_EMBEDDINGS_MODEL=text-embedding-3-small
+ANTHROPIC_GATEWAY_BEARER_TOKEN=replace-with-an-internal-bearer-token
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_CHAT_MODEL=claude-sonnet
+EMBEDDING_DIMENSIONS=16
+```
 
 Variables del `knowledge MCP`:
 
@@ -135,6 +166,19 @@ Variables del `agent MCP`:
 - `AGENT_OPENAI_BASE_URL` opcional; si no existe usa `OPENAI_BASE_URL`
 - `AGENT_OPENAI_API_KEY` opcional; si no existe usa `OPENAI_API_KEY`
 - `AGENT_OPENAI_CHAT_MODEL` opcional; si no existe usa `OPENAI_CHAT_MODEL`
+
+Variables del `anthropic-gateway`:
+
+- `ANTHROPIC_GATEWAY_BASE_URL=http://anthropic-gateway:8081` para la API Python
+- `ANTHROPIC_GATEWAY_BEARER_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_CHAT_MODEL`
+- `ANTHROPIC_TIMEOUT_SECONDS=180`
+
+Health checks del `anthropic-gateway`:
+
+- `GET /health/live`
+- `GET /health/ready`
 
 ## Despliegue en Coolify
 

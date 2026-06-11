@@ -23,7 +23,11 @@ class Settings(BaseSettings):
     arcadedb_root_username: str = Field(default="root", alias="ARCADEDB_ROOT_USERNAME")
     arcadedb_root_password: str = Field(default="change-me-please", alias="ARCADEDB_ROOT_PASSWORD")
 
-    ai_provider: Literal["stub", "openai_compatible"] = Field(default="stub", alias="AI_PROVIDER")
+    ai_provider: Literal["stub", "openai_compatible", "anthropic"] = Field(default="stub", alias="AI_PROVIDER")
+    embedding_provider: Literal["stub", "openai_compatible"] | None = Field(
+        default=None,
+        alias="EMBEDDING_PROVIDER",
+    )
     openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_chat_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_CHAT_MODEL")
@@ -32,6 +36,13 @@ class Settings(BaseSettings):
         alias="OPENAI_EMBEDDINGS_MODEL",
     )
     openai_timeout_seconds: float = Field(default=180.0, alias="OPENAI_TIMEOUT_SECONDS")
+    anthropic_gateway_base_url: str = Field(
+        default="http://anthropic-gateway:8081",
+        alias="ANTHROPIC_GATEWAY_BASE_URL",
+    )
+    anthropic_gateway_bearer_token: str | None = Field(default=None, alias="ANTHROPIC_GATEWAY_BEARER_TOKEN")
+    anthropic_chat_model: str | None = Field(default=None, alias="ANTHROPIC_CHAT_MODEL")
+    anthropic_timeout_seconds: float = Field(default=180.0, alias="ANTHROPIC_TIMEOUT_SECONDS")
     embedding_dimensions: int = Field(default=16, alias="EMBEDDING_DIMENSIONS")
 
     resolution_match_threshold: float = 0.91
@@ -71,6 +82,14 @@ class Settings(BaseSettings):
     @property
     def resolved_agent_openai_chat_model(self) -> str:
         return self.agent_openai_chat_model or self.openai_chat_model
+
+    @property
+    def resolved_embedding_provider(self) -> Literal["stub", "openai_compatible"]:
+        if self.embedding_provider:
+            return self.embedding_provider
+        if self.ai_provider == "anthropic":
+            raise ValueError("EMBEDDING_PROVIDER is required when AI_PROVIDER=anthropic")
+        return self.ai_provider
 
 
 @lru_cache

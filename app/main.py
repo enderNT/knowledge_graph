@@ -103,8 +103,7 @@ def create_app(
                     pass
             if arcade_client:
                 await arcade_client.close()
-            if hasattr(actual_ai_provider, "client"):
-                await actual_ai_provider.client.aclose()  # type: ignore[attr-defined]
+            await actual_ai_provider.close()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 

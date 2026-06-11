@@ -97,6 +97,18 @@ class AIProvider(ABC):
     ) -> PedagogicalEvidenceDecision:
         raise NotImplementedError
 
+    async def close(self) -> None:
+        return None
+
+
+class EmbeddingProvider(ABC):
+    @abstractmethod
+    async def embed(self, text: str) -> list[float]:
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        return None
+
 
 class StubAIProvider(AIProvider):
     def __init__(self, settings: Settings) -> None:
@@ -643,13 +655,20 @@ class StubAIProvider(AIProvider):
         return " ".join(trimmed).strip()
 
 
-class OpenAICompatibleProvider(AIProvider):
+class StubEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    async def embed(self, text: str) -> list[float]:
+        return stable_embedding(text, self.settings.embedding_dimensions)
+
+
+class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
     def __init__(self, settings: Settings) -> None:
         if not settings.openai_api_key:
-            raise ValueError("OPENAI_API_KEY is required when AI_PROVIDER=openai_compatible")
+            raise ValueError("OPENAI_API_KEY is required when embeddings use openai_compatible")
 
         self.settings = settings
-        self.fallback_provider = StubAIProvider(settings)
         self.client = httpx.AsyncClient(
             base_url=settings.openai_base_url.rstrip("/") + "/",
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
@@ -669,6 +688,19 @@ class OpenAICompatibleProvider(AIProvider):
         payload = response.json()
         embedding = payload["data"][0]["embedding"]
         return fit_embedding_dimensions(embedding, self.settings.embedding_dimensions)
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
+class StructuredLLMProvider(AIProvider):
+    def __init__(self, settings: Settings, embedding_provider: EmbeddingProvider) -> None:
+        self.settings = settings
+        self.fallback_provider = StubAIProvider(settings)
+        self._embedding_provider = embedding_provider
+
+    async def embed(self, text: str) -> list[float]:
+        return await self._embedding_provider.embed(text)
 
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
         system_prompt = (
@@ -704,21 +736,12 @@ class OpenAICompatibleProvider(AIProvider):
             "text": text,
         }
         try:
-            response = await self.client.post(
-                "chat/completions",
-                json={
-                    "model": self.settings.openai_chat_model,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=True)},
-                    ],
-                },
+            content = await self._generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=None,
             )
-            response.raise_for_status()
-            payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
-            result = ExtractionResult.model_validate(json.loads(content))
+            result = ExtractionResult.model_validate(content)
             return self._sanitize_llm_extraction(result, text, tags)
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -752,22 +775,12 @@ class OpenAICompatibleProvider(AIProvider):
             "supporting_quote": supporting_quote,
         }
         try:
-            response = await self.client.post(
-                "chat/completions",
-                json={
-                    "model": self.settings.openai_chat_model,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=True)},
-                    ],
-                    "temperature": 0.1,
-                },
+            content = await self._generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.1,
             )
-            response.raise_for_status()
-            payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
-            decision = PedagogicalEvidenceDecision.model_validate(json.loads(content))
+            decision = PedagogicalEvidenceDecision.model_validate(content)
             statement = " ".join(decision.statement.split()).strip(" .")
             quote = " ".join(decision.supporting_quote.split()).strip()
             if not statement or not quote:
@@ -782,6 +795,16 @@ class OpenAICompatibleProvider(AIProvider):
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
             raise ValueError(f"llm pedagogical evidence vetting failed: {message}") from exc
+
+    @abstractmethod
+    async def _generate_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: dict[str, Any],
+        temperature: float | None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
 
     def _sanitize_llm_extraction(self, result: ExtractionResult, text: str, tags: list[str]) -> ExtractionResult:
         domain = tags[0].strip().title() if tags else (result.domain.strip() or "General")
@@ -916,8 +939,114 @@ class OpenAICompatibleProvider(AIProvider):
             return None
         return cleaned
 
+    async def close(self) -> None:
+        await self._embedding_provider.close()
+
+
+class OpenAICompatibleProvider(StructuredLLMProvider):
+    def __init__(self, settings: Settings) -> None:
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required when AI_PROVIDER=openai_compatible")
+
+        super().__init__(settings, OpenAICompatibleEmbeddingProvider(settings))
+        self.client = httpx.AsyncClient(
+            base_url=settings.openai_base_url.rstrip("/") + "/",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            timeout=httpx.Timeout(settings.openai_timeout_seconds, connect=20.0),
+        )
+
+    async def _generate_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: dict[str, Any],
+        temperature: float | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.settings.openai_chat_model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=True)},
+            ],
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        response = await self.client.post("chat/completions", json=payload)
+        response.raise_for_status()
+        raw_payload = response.json()
+        content = raw_payload["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("structured response must be a JSON object")
+        return parsed
+
+    async def close(self) -> None:
+        await super().close()
+        client_close = getattr(self.client, "aclose", None)
+        if callable(client_close):
+            await client_close()
+
+
+class AnthropicGatewayProvider(StructuredLLMProvider):
+    def __init__(self, settings: Settings) -> None:
+        embedding_provider = build_embedding_provider(settings, require_explicit=True)
+        super().__init__(settings, embedding_provider)
+
+        if not settings.anthropic_gateway_bearer_token:
+            raise ValueError("ANTHROPIC_GATEWAY_BEARER_TOKEN is required when AI_PROVIDER=anthropic")
+        if not settings.anthropic_chat_model:
+            raise ValueError("ANTHROPIC_CHAT_MODEL is required when AI_PROVIDER=anthropic")
+
+        self.client = httpx.AsyncClient(
+            base_url=settings.anthropic_gateway_base_url.rstrip("/") + "/",
+            headers={"Authorization": f"Bearer {settings.anthropic_gateway_bearer_token}"},
+            timeout=httpx.Timeout(settings.anthropic_timeout_seconds, connect=20.0),
+        )
+
+    async def _generate_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: dict[str, Any],
+        temperature: float | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.settings.anthropic_chat_model,
+            "system_prompt": system_prompt,
+            "user_payload_json": user_prompt,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        response = await self.client.post("v1/generate-json", json=payload)
+        response.raise_for_status()
+        raw_payload = response.json()
+        content = raw_payload["content_json"]
+        if not isinstance(content, dict):
+            raise ValueError("gateway content_json must be a JSON object")
+        return content
+
+    async def close(self) -> None:
+        await super().close()
+        client_close = getattr(self.client, "aclose", None)
+        if callable(client_close):
+            await client_close()
+
+
+def build_embedding_provider(settings: Settings, *, require_explicit: bool = False) -> EmbeddingProvider:
+    provider_name = settings.resolved_embedding_provider if require_explicit else (
+        settings.embedding_provider or settings.ai_provider
+    )
+    if provider_name == "openai_compatible":
+        return OpenAICompatibleEmbeddingProvider(settings)
+    return StubEmbeddingProvider(settings)
+
 
 def build_ai_provider(settings: Settings) -> AIProvider:
     if settings.ai_provider == "openai_compatible":
         return OpenAICompatibleProvider(settings)
+    if settings.ai_provider == "anthropic":
+        return AnthropicGatewayProvider(settings)
     return StubAIProvider(settings)
