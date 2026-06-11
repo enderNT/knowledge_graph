@@ -499,12 +499,27 @@ Estadísticas agregadas de SR: totales, pendientes, intervalos promedio.
 #### `kg_add_knowledge_fragment`
 Ingesta un texto. Retorna `episode_id` y `job_id`. **Guarda el `episode_id` que retorna.**
 
-| Parámetro | Tipo | Default |
-|-----------|------|---------|
-| `text` | string | **requerido** |
-| `source_type` | string | `"manual_input"` |
-| `tags` | list | null |
-| `language` | string | `"es"` |
+| Parámetro | Tipo | Default | Notas |
+|-----------|------|---------|-------|
+| `text` | string | **requerido** | |
+| `source_type` | string | `"manual_input"` | |
+| `tags` | list | null | |
+| `language` | string | `"es"` | |
+| `temporal` | bool | `false` | Marca conocimiento que puede quedar obsoleto (APIs, versiones, precios) |
+| `expires_at` | string | null | Fecha ISO-8601 en que expira el contenido (`"2026-12-31"`) |
+
+Cuando `temporal=true` y la fecha de `expires_at` ya pasó, los ítems SR vinculados aparecerán con `is_stale: true` en `kg_get_due_spaced_repetition_items`. Omitir ambos campos si el conocimiento es estable (matemáticas, física, conceptos fundamentales).
+
+#### `kg_patch_episode_temporality`
+Modifica el flag de temporalidad de un episodio existente. Úsalo para corregir marcados incorrectos sin necesidad de re-ingestar.
+
+| Parámetro | Tipo | Notas |
+|-----------|------|-------|
+| `episode_id` | string | **requerido** |
+| `temporal` | bool | `false` desmarca, `true` marca como temporal |
+| `expires_at` | string | Fecha ISO-8601; `null` elimina la fecha de expiración |
+
+Flujo típico de corrección: el agente marcó un episodio como `temporal=true` cuando no aplica → ejecutar `kg_patch_episode_temporality(episode_id="ep_...", temporal=false)` → el ítem deja de aparecer como `is_stale` en SR due items.
 
 #### `kg_upsert_concept`
 Crea o actualiza un concepto por UID o nombre canónico.

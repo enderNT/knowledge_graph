@@ -65,7 +65,9 @@ class MCPBackendClient:
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
-        ) -> dict[str, Any]:
+        temporal: bool = False,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
         return await self._request(
             "POST",
             "/v1/knowledge/fragments",
@@ -74,7 +76,22 @@ class MCPBackendClient:
                 "source_type": source_type,
                 "tags": tags or [],
                 "language": language,
+                "temporal": temporal,
+                "expires_at": expires_at,
             },
+        )
+
+    async def patch_episode_temporality(
+        self,
+        episode_id: str,
+        *,
+        temporal: bool,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "PATCH",
+            f"/v1/episodes/{episode_id}/temporality",
+            json={"temporal": temporal, "expires_at": expires_at},
         )
 
     async def reset_knowledge_base(self) -> dict[str, Any]:
@@ -508,12 +525,16 @@ class MCPBackendClient:
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
     ) -> dict[str, Any]:
         accepted = await self.add_knowledge_fragment(
             text=text,
             source_type=source_type,
             tags=tags,
             language=language,
+            temporal=temporal,
+            expires_at=expires_at,
         )
         episode_id = accepted["episode_id"]
         job_id = accepted["job_id"]

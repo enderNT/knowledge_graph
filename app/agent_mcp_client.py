@@ -51,6 +51,7 @@ class AgentMCPUpstreamClient:
         names = sorted(tool.name for tool in tools.tools)
         expected = {
             "add_knowledge_fragment",
+            "patch_episode_temporality",
             "list_episodes",
             "reset_knowledge_base",
             "attach_concept_evidence",
@@ -113,16 +114,32 @@ class AgentMCPUpstreamClient:
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
     ) -> dict[str, Any]:
-        return await self.call_tool(
-            "add_knowledge_fragment",
-            {
-                "text": text,
-                "source_type": source_type,
-                "tags": tags or [],
-                "language": language,
-            },
-        )
+        args: dict[str, Any] = {
+            "text": text,
+            "source_type": source_type,
+            "tags": tags or [],
+            "language": language,
+        }
+        if temporal:
+            args["temporal"] = temporal
+        if expires_at is not None:
+            args["expires_at"] = expires_at
+        return await self.call_tool("add_knowledge_fragment", args)
+
+    async def patch_episode_temporality(
+        self,
+        episode_id: str,
+        *,
+        temporal: bool,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {"episode_id": episode_id, "temporal": temporal}
+        if expires_at is not None:
+            args["expires_at"] = expires_at
+        return await self.call_tool("patch_episode_temporality", args)
 
     async def reset_knowledge_base(self) -> dict[str, Any]:
         return await self.call_tool("reset_knowledge_base", {})

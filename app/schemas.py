@@ -25,6 +25,8 @@ class AddKnowledgeFragmentRequest(BaseModel):
     source_type: str = "manual_input"
     tags: list[str] = Field(default_factory=list)
     language: str = "es"
+    temporal: bool = False
+    expires_at: str | None = None
 
 
 class AddKnowledgeFragmentAccepted(BaseModel):
@@ -657,6 +659,7 @@ class DueSRItem(BaseModel):
     mastery_score_0_to_100: float = Field(default=50.0, ge=0.0, le=100.0)
     confidence_0_to_1: float = Field(default=0.25, ge=0.0, le=1.0)
     requires_direct_validation: bool = False
+    is_stale: bool = False
 
 
 class SRFeedback(BaseModel):
@@ -966,6 +969,13 @@ class EpisodeResponse(BaseModel):
     status: str
     error_message: str | None = None
     created_at: str
+    temporal: bool = False
+    expires_at: str | None = None
+
+
+class PatchEpisodeTemporalityRequest(BaseModel):
+    temporal: bool
+    expires_at: str | None = None
 
 
 EpisodeSortBy = Literal["alphabetical", "date"]
@@ -988,6 +998,8 @@ class EpisodeListItem(BaseModel):
     status: str
     error_message: str | None = None
     created_at: str
+    temporal: bool = False
+    expires_at: str | None = None
     concepts: list[EpisodeConceptSummary] = Field(default_factory=list)
 
 
@@ -1164,6 +1176,8 @@ class EpisodeRecord(BaseModel):
     status: str
     created_at: str
     error_message: str | None = None
+    temporal: bool = False
+    expires_at: str | None = None
 
 
 class ClaimRecord(BaseModel):

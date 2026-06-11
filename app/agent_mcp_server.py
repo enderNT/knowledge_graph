@@ -29,6 +29,16 @@ class AgentUpstreamProtocol(Protocol):
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def patch_episode_temporality(
+        self,
+        episode_id: str,
+        *,
+        temporal: bool,
+        expires_at: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def reset_knowledge_base(self) -> dict[str, Any]: ...
@@ -347,15 +357,37 @@ def create_agent_mcp_server(
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
     ) -> dict[str, Any]:
-        """Ingest a text fragment into the knowledge graph and wait for the semantic result when possible."""
+        """Ingest a text fragment into the knowledge graph and wait for the semantic result when possible.
+
+        Set temporal=true for knowledge that can become outdated (API docs, framework versions, pricing).
+        Optionally provide expires_at (ISO-8601 date/datetime) to mark when the content expires."""
         try:
             return await upstream.add_knowledge_fragment(
                 text=text,
                 source_type=source_type,
                 tags=tags,
                 language=language,
+                temporal=temporal,
+                expires_at=expires_at,
             )
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_patch_episode_temporality")
+    async def kg_patch_episode_temporality(
+        episode_id: Annotated[str, Field(min_length=1)],
+        temporal: bool,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Set or clear the temporal flag on an existing episode.
+
+        Use temporal=false to unmark an episode that was incorrectly flagged as temporal.
+        Use temporal=true with an optional expires_at (ISO-8601) to mark it as time-sensitive."""
+        try:
+            return await upstream.patch_episode_temporality(episode_id, temporal=temporal, expires_at=expires_at)
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 

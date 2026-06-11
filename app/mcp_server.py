@@ -21,6 +21,8 @@ class MCPBackendProtocol(Protocol):
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def ingest_fragment_and_wait(
@@ -30,6 +32,16 @@ class MCPBackendProtocol(Protocol):
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def patch_episode_temporality(
+        self,
+        episode_id: str,
+        *,
+        temporal: bool,
+        expires_at: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def reset_knowledge_base(self) -> dict[str, Any]: ...
@@ -275,6 +287,8 @@ def create_mcp_server(
         source_type: str = "manual_input",
         tags: list[str] | None = None,
         language: str = "es",
+        temporal: bool = False,
+        expires_at: str | None = None,
     ) -> dict[str, Any]:
         """Ingest a text fragment and wait for a semantic job summary when possible."""
         try:
@@ -283,7 +297,21 @@ def create_mcp_server(
                 source_type=source_type,
                 tags=tags,
                 language=language,
+                temporal=temporal,
+                expires_at=expires_at,
             )
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="patch_episode_temporality")
+    async def patch_episode_temporality(
+        episode_id: Annotated[str, Field(min_length=1)],
+        temporal: bool,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Set or clear the temporal flag on an episode. Use temporal=false to unmark an episode that was incorrectly flagged."""
+        try:
+            return await backend.patch_episode_temporality(episode_id, temporal=temporal, expires_at=expires_at)
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 

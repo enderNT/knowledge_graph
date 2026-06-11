@@ -72,11 +72,12 @@ class KnowledgeStore(Protocol):
     async def bootstrap_schema(self) -> None: ...
     async def check_ready(self) -> bool: ...
     async def reset_all_data(self) -> None: ...
-    async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str) -> EpisodeRecord: ...
+    async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str, temporal: bool = False, expires_at: str | None = None) -> EpisodeRecord: ...
     async def create_job(self, *, uid: str, episode_id: str, status: str) -> JobRecord: ...
     async def get_job(self, job_id: str) -> JobRecord | None: ...
     async def update_job(self, job_id: str, *, status: str, result: IngestionSummary | None = None, error: str | None = None) -> JobRecord: ...
     async def get_episode(self, episode_id: str) -> EpisodeRecord | None: ...
+    async def list_stale_concept_uids(self, *, now_iso: str) -> set[str]: ...
     async def list_episodes(
         self,
         *,
@@ -88,6 +89,7 @@ class KnowledgeStore(Protocol):
         concept_sort_order: str = "asc",
     ) -> tuple[list[Any], int]: ...
     async def update_episode(self, episode_id: str, *, status: str, error_message: str | None = None, embedding: list[float] | None = None) -> EpisodeRecord: ...
+    async def patch_episode_temporality(self, episode_id: str, *, temporal: bool, expires_at: str | None) -> EpisodeRecord: ...
     async def create_concept(self, payload: CreateConceptRequest, *, embedding: list[float], source_confidence: float) -> ConceptRecord: ...
     async def upsert_concept(self, payload: UpsertConceptRequest, *, embedding: list[float], source_confidence: float) -> tuple[ConceptRecord, bool]: ...
     async def get_concept(self, ref: str) -> ConceptRecord | None: ...
@@ -204,12 +206,23 @@ class ArcadeKnowledgeStore:
             await self.client.server_command(f"drop database {self.settings.arcadedb_database}")
         await ensure_database_and_schema(self.client, self.settings)
 
-    async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str) -> EpisodeRecord:
+    async def create_episode(
+        self,
+        *,
+        uid: str,
+        text: str,
+        source_type: str,
+        tags: list[str],
+        language: str,
+        temporal: bool = False,
+        expires_at: str | None = None,
+    ) -> EpisodeRecord:
         created_at = utcnow_iso()
         await self.client.command(
             (
                 "CREATE VERTEX Episode SET uid = :uid, text = :text, source_type = :source_type, tags = :tags, "
-                "language = :language, status = :status, created_at = :created_at"
+                "language = :language, status = :status, created_at = :created_at, "
+                "temporal = :temporal, expires_at = :expires_at"
             ),
             {
                 "uid": uid,
@@ -219,6 +232,8 @@ class ArcadeKnowledgeStore:
                 "language": language,
                 "status": "queued",
                 "created_at": created_at,
+                "temporal": temporal,
+                "expires_at": expires_at,
             },
         )
         return EpisodeRecord(
@@ -229,6 +244,8 @@ class ArcadeKnowledgeStore:
             language=language,
             status="queued",
             created_at=created_at,
+            temporal=temporal,
+            expires_at=expires_at,
             error_message=None,
         )
 
@@ -293,7 +310,8 @@ class ArcadeKnowledgeStore:
     async def get_episode(self, episode_id: str) -> EpisodeRecord | None:
         rows = await self.client.query(
             (
-                "SELECT uid, text, source_type, tags, language, status, error_message, created_at "
+                "SELECT uid, text, source_type, tags, language, status, error_message, created_at, "
+                "coalesce(temporal, false) as temporal, expires_at "
                 "FROM Episode WHERE uid = :uid LIMIT 1"
             ),
             {"uid": episode_id},
@@ -327,6 +345,22 @@ class ArcadeKnowledgeStore:
             raise ValueError(f"episode not found after update: {episode_id}")
         return episode
 
+    async def patch_episode_temporality(
+        self,
+        episode_id: str,
+        *,
+        temporal: bool,
+        expires_at: str | None,
+    ) -> EpisodeRecord:
+        await self.client.command(
+            "UPDATE Episode SET temporal = :temporal, expires_at = :expires_at WHERE uid = :uid",
+            {"uid": episode_id, "temporal": temporal, "expires_at": expires_at},
+        )
+        episode = await self.get_episode(episode_id)
+        if not episode:
+            raise ValueError(f"episode not found after patch: {episode_id}")
+        return episode
+
     async def list_episodes(
         self,
         *,
@@ -345,7 +379,8 @@ class ArcadeKnowledgeStore:
         total = int((count_rows[0].get("n") or 0) if count_rows else 0)
 
         ep_rows = await self.client.query(
-            f"SELECT uid, source_type, tags, language, status, created_at, error_message "
+            f"SELECT uid, source_type, tags, language, status, created_at, error_message, "
+            f"coalesce(temporal, false) as temporal, expires_at "
             f"FROM Episode ORDER BY {order_field} {direction} SKIP {offset} LIMIT {limit}",
             {},
         )
@@ -392,9 +427,20 @@ class ArcadeKnowledgeStore:
                 "status": str(row.get("status") or ""),
                 "error_message": row.get("error_message"),
                 "created_at": str(row.get("created_at") or ""),
+                "temporal": bool(row.get("temporal") or False),
+                "expires_at": row.get("expires_at"),
                 "concepts": concepts_by_episode.get(uid, []),
             })
         return episodes, total
+
+    async def list_stale_concept_uids(self, *, now_iso: str) -> set[str]:
+        rows = await self._safe_query(
+            "MATCH {type: Episode, as: ep, where: (temporal = true AND expires_at IS NOT NULL AND expires_at <= :now_iso)}"
+            ".in('MENTIONED_IN'){type: Concept, as: concept} "
+            "RETURN concept.uid as uid",
+            {"now_iso": now_iso},
+        )
+        return {str(row["uid"]) for row in rows if row.get("uid")}
 
     async def create_concept(
         self,
@@ -1561,6 +1607,7 @@ class ArcadeKnowledgeStore:
         ]
         context = await self.get_pedagogical_context(user_id=user_id)
         context_map = {state.concept_uid: state for state in context.concepts}
+        stale_uids = await self.list_stale_concept_uids(now_iso=now_iso)
         now_dt = _parse_iso_datetime(now_iso)
         due_items: list[DueSRItem] = []
         for state in states:
@@ -1588,6 +1635,7 @@ class ArcadeKnowledgeStore:
                     mastery_score_0_to_100=concept_state.mastery_score_0_to_100 if concept_state else 50.0,
                     confidence_0_to_1=concept_state.confidence_0_to_1 if concept_state else 0.25,
                     requires_direct_validation=state.requires_direct_validation,
+                    is_stale=state.concept_uid in stale_uids,
                 )
             )
         due_items.sort(
@@ -2512,7 +2560,7 @@ class InMemoryKnowledgeStore:
         self.adaptive_sessions.clear()
         self.adaptive_block_attempts.clear()
 
-    async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str) -> EpisodeRecord:
+    async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str, temporal: bool = False, expires_at: str | None = None) -> EpisodeRecord:
         episode = EpisodeRecord(
             uid=uid,
             text=text,
@@ -2522,9 +2570,18 @@ class InMemoryKnowledgeStore:
             status="queued",
             created_at=utcnow_iso(),
             error_message=None,
+            temporal=temporal,
+            expires_at=expires_at,
         )
         self.episodes[uid] = episode
         return episode
+
+    async def list_stale_concept_uids(self, *, now_iso: str) -> set[str]:
+        stale: set[str] = set()
+        for ep in self.episodes.values():
+            if ep.temporal and ep.expires_at and ep.expires_at <= now_iso:
+                stale.update(self.concept_mentions.get(ep.uid, set()))
+        return stale
 
     async def create_job(self, *, uid: str, episode_id: str, status: str) -> JobRecord:
         now = utcnow_iso()
@@ -2561,6 +2618,18 @@ class InMemoryKnowledgeStore:
     ) -> EpisodeRecord:
         episode = self.episodes[episode_id]
         updated = episode.model_copy(update={"status": status, "error_message": error_message})
+        self.episodes[episode_id] = updated
+        return updated
+
+    async def patch_episode_temporality(
+        self,
+        episode_id: str,
+        *,
+        temporal: bool,
+        expires_at: str | None,
+    ) -> EpisodeRecord:
+        episode = self.episodes[episode_id]
+        updated = episode.model_copy(update={"temporal": temporal, "expires_at": expires_at})
         self.episodes[episode_id] = updated
         return updated
 

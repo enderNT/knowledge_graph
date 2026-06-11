@@ -11,6 +11,7 @@ from app.schemas import (
     EpisodeListItem,
     EpisodeListResponse,
     EpisodeResponse,
+    PatchEpisodeTemporalityRequest,
 )
 
 
@@ -74,3 +75,20 @@ async def get_episode(episode_id: str, services=Depends(require_private_api_acce
     if not episode:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
     return EpisodeResponse.model_validate(episode.model_dump())
+
+
+@router.patch("/{episode_id}/temporality", response_model=EpisodeResponse)
+async def patch_episode_temporality(
+    episode_id: str,
+    body: PatchEpisodeTemporalityRequest,
+    services=Depends(require_private_api_access),
+) -> EpisodeResponse:
+    episode = await services.store.get_episode(episode_id)
+    if not episode:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    updated = await services.store.patch_episode_temporality(
+        episode_id,
+        temporal=body.temporal,
+        expires_at=body.expires_at,
+    )
+    return EpisodeResponse.model_validate(updated.model_dump())

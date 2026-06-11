@@ -90,6 +90,8 @@ Tools expuestas:
 
 `add_knowledge_fragment` encapsula la asincronía del backend: crea el job, hace polling y devuelve `completed`, `failed` o `processing` con `episode_id` y `job_id`.
 
+Parámetros opcionales de temporalidad: `temporal: bool = false` y `expires_at: str | None = null` (ISO-8601). Úsalos solo para contenido que puede quedar obsoleto (docs de APIs, versiones de frameworks, precios). Cuando `expires_at` ha pasado, los ítems SR vinculados a ese episodio aparecen con `is_stale: true` en `get_due_sr_items`.
+
 `get_tutor_context` acepta exactamente una referencia entre `query`, `episode_id` o `job_id`. Devuelve un paquete estructurado y trazable, y falla con `status=failed` + `failure_reason` cuando no hay evidencia suficiente.
 
 ## Agent MCP Público

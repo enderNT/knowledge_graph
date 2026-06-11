@@ -41,6 +41,8 @@ class IngestionService:
             source_type=request.source_type,
             tags=request.tags,
             language=request.language,
+            temporal=request.temporal,
+            expires_at=request.expires_at,
         )
         await self.store.create_job(uid=job_id, episode_id=episode_id, status="queued")
         await self.queue.put(job_id)
