@@ -77,6 +77,16 @@ class KnowledgeStore(Protocol):
     async def get_job(self, job_id: str) -> JobRecord | None: ...
     async def update_job(self, job_id: str, *, status: str, result: IngestionSummary | None = None, error: str | None = None) -> JobRecord: ...
     async def get_episode(self, episode_id: str) -> EpisodeRecord | None: ...
+    async def list_episodes(
+        self,
+        *,
+        sort_by: str = "alphabetical",
+        sort_order: str = "asc",
+        limit: int = 10,
+        page: int = 1,
+        concept_sort_by: str | None = None,
+        concept_sort_order: str = "asc",
+    ) -> tuple[list[Any], int]: ...
     async def update_episode(self, episode_id: str, *, status: str, error_message: str | None = None, embedding: list[float] | None = None) -> EpisodeRecord: ...
     async def create_concept(self, payload: CreateConceptRequest, *, embedding: list[float], source_confidence: float) -> ConceptRecord: ...
     async def upsert_concept(self, payload: UpsertConceptRequest, *, embedding: list[float], source_confidence: float) -> tuple[ConceptRecord, bool]: ...
@@ -316,6 +326,75 @@ class ArcadeKnowledgeStore:
         if not episode:
             raise ValueError(f"episode not found after update: {episode_id}")
         return episode
+
+    async def list_episodes(
+        self,
+        *,
+        sort_by: str = "alphabetical",
+        sort_order: str = "asc",
+        limit: int = 10,
+        page: int = 1,
+        concept_sort_by: str | None = None,
+        concept_sort_order: str = "asc",
+    ) -> tuple[list[Any], int]:
+        direction = "ASC" if sort_order == "asc" else "DESC"
+        order_field = "uid" if sort_by == "alphabetical" else "created_at"
+        offset = (page - 1) * limit
+
+        count_rows = await self.client.query("SELECT count() as n FROM Episode", {})
+        total = int((count_rows[0].get("n") or 0) if count_rows else 0)
+
+        ep_rows = await self.client.query(
+            f"SELECT uid, source_type, tags, language, status, created_at, error_message "
+            f"FROM Episode ORDER BY {order_field} {direction} SKIP {offset} LIMIT {limit}",
+            {},
+        )
+        if not ep_rows:
+            return [], total
+
+        ep_uids = [str(row["uid"]) for row in ep_rows]
+        concept_rows = await self._safe_query(
+            "MATCH {type: Episode, as: ep, where: (uid in :uids)}"
+            ".in('MENTIONED_IN'){type: Concept, as: concept} "
+            "RETURN ep.uid as episode_uid, concept.uid as uid, "
+            "concept.canonical_name as canonical_name, "
+            "coalesce(concept.domain, '') as domain, "
+            "coalesce(concept.created_at, '') as created_at",
+            {"uids": ep_uids},
+        )
+
+        concepts_by_episode: dict[str, list[dict[str, Any]]] = {uid: [] for uid in ep_uids}
+        for row in concept_rows:
+            ep_uid = str(row.get("episode_uid") or "")
+            if ep_uid in concepts_by_episode:
+                concepts_by_episode[ep_uid].append({
+                    "uid": str(row.get("uid") or ""),
+                    "canonical_name": str(row.get("canonical_name") or ""),
+                    "domain": str(row.get("domain") or ""),
+                    "created_at": str(row.get("created_at") or ""),
+                })
+
+        if concept_sort_by:
+            sort_key = "canonical_name" if concept_sort_by == "alphabetical" else "created_at"
+            reverse = concept_sort_order == "desc"
+            for uid in concepts_by_episode:
+                concepts_by_episode[uid].sort(key=lambda c: c.get(sort_key, ""), reverse=reverse)
+
+        episodes: list[Any] = []
+        for row in ep_rows:
+            uid = str(row.get("uid") or "")
+            row["tags"] = row.get("tags") or []
+            episodes.append({
+                "uid": uid,
+                "source_type": str(row.get("source_type") or ""),
+                "tags": row["tags"],
+                "language": str(row.get("language") or ""),
+                "status": str(row.get("status") or ""),
+                "error_message": row.get("error_message"),
+                "created_at": str(row.get("created_at") or ""),
+                "concepts": concepts_by_episode.get(uid, []),
+            })
+        return episodes, total
 
     async def create_concept(
         self,
@@ -2484,6 +2563,50 @@ class InMemoryKnowledgeStore:
         updated = episode.model_copy(update={"status": status, "error_message": error_message})
         self.episodes[episode_id] = updated
         return updated
+
+    async def list_episodes(
+        self,
+        *,
+        sort_by: str = "alphabetical",
+        sort_order: str = "asc",
+        limit: int = 10,
+        page: int = 1,
+        concept_sort_by: str | None = None,
+        concept_sort_order: str = "asc",
+    ) -> tuple[list[Any], int]:
+        all_eps = list(self.episodes.values())
+        sort_key = "uid" if sort_by == "alphabetical" else "created_at"
+        all_eps.sort(key=lambda e: getattr(e, sort_key, ""), reverse=(sort_order == "desc"))
+        total = len(all_eps)
+        offset = (page - 1) * limit
+        page_eps = all_eps[offset: offset + limit]
+
+        concept_sort_key = "canonical_name" if concept_sort_by == "alphabetical" else "created_at"
+        result: list[Any] = []
+        for ep in page_eps:
+            concepts = [
+                {
+                    "uid": c_uid,
+                    "canonical_name": self.concepts[c_uid].canonical_name if c_uid in self.concepts else c_uid,
+                    "domain": self.concepts[c_uid].domain if c_uid in self.concepts else "",
+                    "created_at": self.concepts[c_uid].created_at if c_uid in self.concepts else "",
+                }
+                for c_uid in self.concept_mentions.get(ep.uid, set())
+                if c_uid in self.concepts
+            ]
+            if concept_sort_by:
+                concepts.sort(key=lambda c: c.get(concept_sort_key, ""), reverse=(concept_sort_order == "desc"))
+            result.append({
+                "uid": ep.uid,
+                "source_type": ep.source_type,
+                "tags": ep.tags,
+                "language": ep.language,
+                "status": ep.status,
+                "error_message": ep.error_message,
+                "created_at": ep.created_at,
+                "concepts": concepts,
+            })
+        return result, total
 
     async def create_concept(
         self,

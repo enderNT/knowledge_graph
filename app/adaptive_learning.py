@@ -358,6 +358,11 @@ class AdaptiveLearningService:
         )
 
     async def _resolve_tutor_context(self, payload: AdaptiveSessionStartRequest) -> TutorContextResponse:
+        if payload.study_mode == "auto" and not any([payload.query, payload.episode_id, payload.job_id]):
+            return await self._auto_resolve_tutor_context(
+                user_id=payload.user_id,
+                domain_hint=payload.domain_hint,
+            )
         builder = TutorContextBuilder(
             settings=self._settings,
             store=self._store,
@@ -378,6 +383,38 @@ class AdaptiveLearningService:
                 detail=tutor_context.failure_reason or "insufficient_pedagogical_evidence",
             )
         return tutor_context
+
+    async def _auto_resolve_tutor_context(
+        self,
+        *,
+        user_id: str,
+        domain_hint: str | None,
+    ) -> TutorContextResponse:
+        due_items = await self._sr_service.list_review_candidates_for_planner(
+            user_id=user_id,
+            domain_hint=domain_hint,
+            recovery_only=False,
+        )
+        candidates: list[tuple[str, str]] = []
+        for item in due_items:
+            candidates.append((item.concept_uid, item.concept_name or item.concept_uid))
+        if not candidates:
+            pedagogical_context = await self._store.get_pedagogical_context(user_id=user_id)
+            states = pedagogical_context.concepts
+            if domain_hint:
+                states = [s for s in states if s.domain == domain_hint]
+            states.sort(key=lambda s: (-s.priority_score, s.dimensions.weakest_dimension()[1].score_0_to_100))
+            candidates = [(s.concept_uid, s.concept_name) for s in states]
+        if not candidates:
+            raise HTTPException(status_code=422, detail="no_content_available_for_auto_mode")
+        for concept_uid, concept_name in candidates:
+            tutor_context = await self._resolve_tutor_context_for_concept(
+                concept_uid=concept_uid,
+                concept_name=concept_name,
+            )
+            if tutor_context is not None:
+                return tutor_context
+        raise HTTPException(status_code=422, detail="no_traceable_evidence_found_for_auto_mode")
 
     async def _select_target_concept(
         self,
@@ -472,7 +509,7 @@ class AdaptiveLearningService:
     ) -> list[DueSRItem]:
         return await self._sr_service.list_review_candidates_for_planner(
             user_id=user_id,
-            domain_hint=domain_hint if study_mode == "isolated" else None,
+            domain_hint=domain_hint if study_mode in {"isolated", "auto"} else None,
             recovery_only=study_mode == "recovery",
         )
 

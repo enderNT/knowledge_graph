@@ -407,7 +407,7 @@ class TutorContextResponse(BaseModel):
 
 
 PedagogicalDimension = Literal["recognition", "recall", "explanation", "application"]
-StudyMode = Literal["hybrid", "backlog", "recovery", "isolated"]
+StudyMode = Literal["hybrid", "backlog", "recovery", "isolated", "auto"]
 AdaptiveBlockPurpose = Literal["spaced_repetition_review", "new_content"]
 AdaptiveQuestionType = Literal[
     "multiple_choice_single",
@@ -862,7 +862,10 @@ class AdaptiveSessionStartRequest(BaseModel):
             )
             if value
         ]
-        if len(provided) != 1:
+        if self.study_mode == "auto":
+            if len(provided) > 1:
+                raise ValueError("auto mode does not accept more than one anchor reference")
+        elif len(provided) != 1:
             raise ValueError("exactly one of query, episode_id or job_id must be provided")
         if self.study_mode == "isolated" and not self.domain_hint:
             raise ValueError("domain_hint is required when study_mode is isolated")
@@ -963,6 +966,40 @@ class EpisodeResponse(BaseModel):
     status: str
     error_message: str | None = None
     created_at: str
+
+
+EpisodeSortBy = Literal["alphabetical", "date"]
+EpisodeSortOrder = Literal["asc", "desc"]
+ConceptSortBy = Literal["alphabetical", "date"]
+
+
+class EpisodeConceptSummary(BaseModel):
+    uid: str
+    canonical_name: str
+    domain: str
+    created_at: str
+
+
+class EpisodeListItem(BaseModel):
+    uid: str
+    source_type: str
+    tags: list[str] = Field(default_factory=list)
+    language: str
+    status: str
+    error_message: str | None = None
+    created_at: str
+    concepts: list[EpisodeConceptSummary] = Field(default_factory=list)
+
+
+class EpisodeListResponse(BaseModel):
+    episodes: list[EpisodeListItem]
+    total: int
+    page: int
+    limit: int
+    total_pages: int
+    has_next: bool
+    has_prev: bool
+    warnings: list[str] = Field(default_factory=list)
 
 
 class IngestionSummary(BaseModel):

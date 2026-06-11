@@ -33,6 +33,17 @@ class AgentUpstreamProtocol(Protocol):
 
     async def reset_knowledge_base(self) -> dict[str, Any]: ...
 
+    async def list_episodes(
+        self,
+        *,
+        sort_by: str = "alphabetical",
+        sort_order: str = "asc",
+        limit: int = 10,
+        page: int = 1,
+        concept_sort_by: str | None = None,
+        concept_sort_order: str = "asc",
+    ) -> dict[str, Any]: ...
+
     async def search_candidates(
         self,
         *,
@@ -353,6 +364,28 @@ def create_agent_mcp_server(
         """Reset the stored graph, pedagogical state, adaptive sessions and queued ingestion payloads."""
         try:
             return await upstream.reset_knowledge_base()
+        except AgentMCPUpstreamError as exc:
+            raise translate_error(exc) from exc
+
+    @mcp.tool(name="kg_list_episodes")
+    async def kg_list_episodes(
+        sort_by: Annotated[str, Field(pattern="^(alphabetical|date)$")] = "alphabetical",
+        sort_order: Annotated[str, Field(pattern="^(asc|desc)$")] = "asc",
+        limit: Annotated[int, Field(ge=1, le=100)] = 10,
+        page: Annotated[int, Field(ge=1)] = 1,
+        concept_sort_by: Annotated[str | None, Field(pattern="^(alphabetical|date)$")] = None,
+        concept_sort_order: Annotated[str, Field(pattern="^(asc|desc)$")] = "asc",
+    ) -> dict[str, Any]:
+        """List all ingested episodes with pagination, sorting by id or date, and optional concept sorting within each episode."""
+        try:
+            return await upstream.list_episodes(
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+                page=page,
+                concept_sort_by=concept_sort_by,
+                concept_sort_order=concept_sort_order,
+            )
         except AgentMCPUpstreamError as exc:
             raise translate_error(exc) from exc
 
@@ -704,7 +737,7 @@ def create_agent_mcp_server(
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
-        study_mode: Annotated[str, Field(pattern="^(hybrid|backlog|recovery|isolated)$")] = "hybrid",
+        study_mode: Annotated[str, Field(pattern="^(hybrid|backlog|recovery|isolated|auto)$")] = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,

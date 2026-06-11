@@ -119,6 +119,27 @@ class MCPBackendClient:
     async def get_job(self, job_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/v1/jobs/{job_id}")
 
+    async def list_episodes(
+        self,
+        *,
+        sort_by: str = "alphabetical",
+        sort_order: str = "asc",
+        limit: int = 10,
+        page: int = 1,
+        concept_sort_by: str | None = None,
+        concept_sort_order: str = "asc",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "limit": limit,
+            "page": page,
+            "concept_sort_order": concept_sort_order,
+        }
+        if concept_sort_by is not None:
+            params["concept_sort_by"] = concept_sort_by
+        return await self._request("GET", "/v1/episodes", params=params)
+
     async def search_candidates(
         self,
         *,

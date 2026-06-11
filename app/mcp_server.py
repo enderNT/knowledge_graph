@@ -34,6 +34,17 @@ class MCPBackendProtocol(Protocol):
 
     async def reset_knowledge_base(self) -> dict[str, Any]: ...
 
+    async def list_episodes(
+        self,
+        *,
+        sort_by: str = "alphabetical",
+        sort_order: str = "asc",
+        limit: int = 10,
+        page: int = 1,
+        concept_sort_by: str | None = None,
+        concept_sort_order: str = "asc",
+    ) -> dict[str, Any]: ...
+
     async def search_candidates(
         self,
         *,
@@ -281,6 +292,28 @@ def create_mcp_server(
         """Completely reset the stored graph, pedagogical state, sessions and queued ingestion payloads."""
         try:
             return await backend.reset_knowledge_base()
+        except MCPBackendError as exc:
+            raise translate_backend_error(exc) from exc
+
+    @mcp.tool(name="list_episodes")
+    async def list_episodes(
+        sort_by: Annotated[str, Field(pattern="^(alphabetical|date)$")] = "alphabetical",
+        sort_order: Annotated[str, Field(pattern="^(asc|desc)$")] = "asc",
+        limit: Annotated[int, Field(ge=1, le=100)] = 10,
+        page: Annotated[int, Field(ge=1)] = 1,
+        concept_sort_by: Annotated[str | None, Field(pattern="^(alphabetical|date)$")] = None,
+        concept_sort_order: Annotated[str, Field(pattern="^(asc|desc)$")] = "asc",
+    ) -> dict[str, Any]:
+        """List all ingested episodes with pagination, sorting, and concept summaries per episode."""
+        try:
+            return await backend.list_episodes(
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+                page=page,
+                concept_sort_by=concept_sort_by,
+                concept_sort_order=concept_sort_order,
+            )
         except MCPBackendError as exc:
             raise translate_backend_error(exc) from exc
 
