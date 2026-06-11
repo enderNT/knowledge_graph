@@ -1024,12 +1024,26 @@ class ExtractedConcept(BaseModel):
     def normalize_name(cls, value: str) -> str:
         return value.strip()
 
+    @field_validator("aliases", "evidence_quotes", mode="before")
+    @classmethod
+    def coerce_to_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value if isinstance(value, list) else []
+
 
 class ExtractedClaim(BaseModel):
     text: str
     confidence: float = 0.8
     explains: list[str] = Field(default_factory=list)
     supporting_quote: str | None = None
+
+    @field_validator("explains", mode="before")
+    @classmethod
+    def coerce_explains_to_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value if isinstance(value, list) else []
 
 
 class ExtractedRelation(BaseModel):
@@ -1054,6 +1068,13 @@ class ExtractionResult(BaseModel):
     claims: list[ExtractedClaim] = Field(default_factory=list)
     relations: list[ExtractedRelation] = Field(default_factory=list)
 
+    @field_validator("topics", mode="before")
+    @classmethod
+    def coerce_topics_to_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value if isinstance(value, list) else []
+
 
 class PedagogicalEvidenceDecision(BaseModel):
     statement: str
@@ -1061,6 +1082,28 @@ class PedagogicalEvidenceDecision(BaseModel):
     kind: Literal["claim", "definition", "relationship"] = "claim"
     status: Literal["approved", "rejected", "repairable"] = "approved"
     review_notes: list[str] = Field(default_factory=list)
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def normalize_kind(cls, value: Any) -> str:
+        allowed = {"claim", "definition", "relationship"}
+        if isinstance(value, str):
+            v = value.lower().strip()
+            if v in allowed:
+                return v
+            if "defin" in v:
+                return "definition"
+            if "relation" in v:
+                return "relationship"
+            return "claim"
+        return value
+
+    @field_validator("review_notes", mode="before")
+    @classmethod
+    def coerce_review_notes_to_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value if isinstance(value, list) else []
 
 
 class ConceptRecord(BaseModel):

@@ -80,6 +80,47 @@ func TestHandleGenerateJSONReturnsStructuredJSON(t *testing.T) {
 	}
 }
 
+func TestHandleGenerateJSONValidatesThinkingModes(t *testing.T) {
+	server := gatewayServer{
+		cfg: config{active: true, bearerToken: "secret"},
+		client: &fakeAnthropicClient{
+			content: map[string]any{"ok": true},
+		},
+	}
+
+	testCases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "adaptive with budget",
+			body: `{"system_prompt":"x","user_payload_json":{"a":1},"thinking":{"type":"adaptive","budget_tokens":1000}}`,
+		},
+		{
+			name: "enabled without budget",
+			body: `{"system_prompt":"x","user_payload_json":{"a":1},"thinking":{"type":"enabled"}}`,
+		},
+		{
+			name: "invalid effort",
+			body: `{"system_prompt":"x","user_payload_json":{"a":1},"output_config":{"effort":"turbo"}}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/generate-json", strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer secret")
+			rec := httptest.NewRecorder()
+
+			server.handleGenerateJSON(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", rec.Code)
+			}
+		})
+	}
+}
+
 func TestHandleGenerateJSONMapsClientErrors(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -123,6 +164,18 @@ func TestHTTPAnthropicClientGenerateJSONParsesResponse(t *testing.T) {
 				if got := r.Header.Get("X-API-Key"); got != "sk-test" {
 					t.Fatalf("unexpected api key header: %q", got)
 				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+				thinking, ok := body["thinking"].(map[string]any)
+				if !ok || thinking["type"] != "adaptive" {
+					t.Fatalf("unexpected thinking payload: %#v", body["thinking"])
+				}
+				outputConfig, ok := body["output_config"].(map[string]any)
+				if !ok || outputConfig["effort"] != "medium" {
+					t.Fatalf("unexpected output_config payload: %#v", body["output_config"])
+				}
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Header:     make(http.Header),
@@ -135,6 +188,8 @@ func TestHTTPAnthropicClientGenerateJSONParsesResponse(t *testing.T) {
 	content, err := client.GenerateJSON(context.Background(), generateJSONRequest{
 		SystemPrompt:    "prompt",
 		UserPayloadJSON: json.RawMessage(`{"text":"hola"}`),
+		Thinking:        &thinkingConfig{Type: "adaptive"},
+		OutputConfig:    &outputConfig{Effort: "medium"},
 	})
 	if err != nil {
 		t.Fatalf("GenerateJSON returned error: %v", err)

@@ -1012,13 +1012,11 @@ class AnthropicGatewayProvider(StructuredLLMProvider):
         user_prompt: dict[str, Any],
         temperature: float | None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": self.settings.anthropic_chat_model,
-            "system_prompt": system_prompt,
-            "user_payload_json": user_prompt,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
+        payload = self._build_gateway_payload(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+        )
 
         response = await self.client.post("v1/generate-json", json=payload)
         response.raise_for_status()
@@ -1027,6 +1025,29 @@ class AnthropicGatewayProvider(StructuredLLMProvider):
         if not isinstance(content, dict):
             raise ValueError("gateway content_json must be a JSON object")
         return content
+
+    def _build_gateway_payload(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: dict[str, Any],
+        temperature: float | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.settings.anthropic_chat_model,
+            "system_prompt": system_prompt,
+            "user_payload_json": user_prompt,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if self.settings.anthropic_thinking_type:
+            thinking: dict[str, Any] = {"type": self.settings.anthropic_thinking_type}
+            if self.settings.anthropic_thinking_budget_tokens is not None:
+                thinking["budget_tokens"] = self.settings.anthropic_thinking_budget_tokens
+            payload["thinking"] = thinking
+        if self.settings.anthropic_effort and self.settings.anthropic_thinking_type != "enabled":
+            payload["output_config"] = {"effort": self.settings.anthropic_effort}
+        return payload
 
     async def close(self) -> None:
         await super().close()

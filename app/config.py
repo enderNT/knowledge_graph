@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     )
     anthropic_gateway_bearer_token: str | None = Field(default=None, alias="ANTHROPIC_GATEWAY_BEARER_TOKEN")
     anthropic_chat_model: str | None = Field(default=None, alias="ANTHROPIC_CHAT_MODEL")
+    anthropic_thinking_type: Literal["adaptive", "enabled"] | None = Field(
+        default=None,
+        alias="ANTHROPIC_THINKING_TYPE",
+    )
+    anthropic_thinking_budget_tokens: int | None = Field(
+        default=None,
+        alias="ANTHROPIC_THINKING_BUDGET_TOKENS",
+    )
+    anthropic_effort: Literal["low", "medium", "high", "max", "xhigh"] | None = Field(
+        default=None,
+        alias="ANTHROPIC_EFFORT",
+    )
     anthropic_timeout_seconds: float = Field(default=180.0, alias="ANTHROPIC_TIMEOUT_SECONDS")
     embedding_dimensions: int = Field(default=16, alias="EMBEDDING_DIMENSIONS")
 
@@ -90,6 +102,26 @@ class Settings(BaseSettings):
         if self.ai_provider == "anthropic":
             raise ValueError("EMBEDDING_PROVIDER is required when AI_PROVIDER=anthropic")
         return self.ai_provider
+
+    @model_validator(mode="after")
+    def validate_anthropic_thinking(self) -> "Settings":
+        if self.anthropic_thinking_budget_tokens is not None and self.anthropic_thinking_budget_tokens <= 0:
+            raise ValueError("ANTHROPIC_THINKING_BUDGET_TOKENS must be greater than 0")
+
+        if self.anthropic_thinking_type == "adaptive" and self.anthropic_thinking_budget_tokens is not None:
+            raise ValueError("ANTHROPIC_THINKING_BUDGET_TOKENS cannot be set when ANTHROPIC_THINKING_TYPE=adaptive")
+
+        if self.anthropic_thinking_type == "enabled" and self.anthropic_thinking_budget_tokens is None:
+            raise ValueError("ANTHROPIC_THINKING_BUDGET_TOKENS is required when ANTHROPIC_THINKING_TYPE=enabled")
+
+        if self.anthropic_thinking_type is None and self.anthropic_thinking_budget_tokens is not None:
+            raise ValueError("ANTHROPIC_THINKING_TYPE is required when ANTHROPIC_THINKING_BUDGET_TOKENS is set")
+
+        model_name = (self.anthropic_chat_model or "").strip().lower()
+        if "haiku" in model_name and self.anthropic_thinking_type == "adaptive":
+            raise ValueError("ANTHROPIC_THINKING_TYPE=adaptive is not supported for Claude Haiku 4.5")
+
+        return self
 
 
 @lru_cache

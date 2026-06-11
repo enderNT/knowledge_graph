@@ -28,6 +28,17 @@ type generateJSONRequest struct {
 	SystemPrompt    string          `json:"system_prompt"`
 	UserPayloadJSON json.RawMessage `json:"user_payload_json"`
 	Temperature     *float64        `json:"temperature,omitempty"`
+	Thinking        *thinkingConfig `json:"thinking,omitempty"`
+	OutputConfig    *outputConfig   `json:"output_config,omitempty"`
+}
+
+type thinkingConfig struct {
+	Type         string `json:"type"`
+	BudgetTokens *int   `json:"budget_tokens,omitempty"`
+}
+
+type outputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type anthropicClient interface {
@@ -163,6 +174,10 @@ func (s gatewayServer) handleGenerateJSON(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, errors.New("invalid_request_payload"))
 		return
 	}
+	if err := validateGenerateJSONRequest(req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	content, err := s.client.GenerateJSON(r.Context(), req)
 	if err != nil {
@@ -199,7 +214,7 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 
 	body := map[string]any{
 		"model":      model,
-		"max_tokens": 4096,
+		"max_tokens": 8192,
 		"system":     req.SystemPrompt + " Return only valid JSON.",
 		"messages": []map[string]any{
 			{
@@ -213,8 +228,20 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 			},
 		},
 	}
-	if req.Temperature != nil {
+	if req.Temperature != nil && req.Thinking == nil {
 		body["temperature"] = *req.Temperature
+	}
+	if req.Thinking != nil {
+		thinking := map[string]any{
+			"type": req.Thinking.Type,
+		}
+		if req.Thinking.BudgetTokens != nil {
+			thinking["budget_tokens"] = *req.Thinking.BudgetTokens
+		}
+		body["thinking"] = thinking
+	}
+	if req.OutputConfig != nil && strings.TrimSpace(req.OutputConfig.Effort) != "" {
+		body["output_config"] = map[string]any{"effort": req.OutputConfig.Effort}
 	}
 
 	rawBody, err := json.Marshal(body)
@@ -247,6 +274,9 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 		return nil, errUpstreamAuth
 	}
 	if resp.StatusCode >= 400 {
+		var errBody bytes.Buffer
+		_, _ = errBody.ReadFrom(resp.Body)
+		log.Printf("anthropic upstream error: status=%d body=%s", resp.StatusCode, errBody.String())
 		return nil, errUpstreamGeneric
 	}
 
@@ -292,4 +322,32 @@ func writeJSON(w http.ResponseWriter, status int, payload map[string]any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"detail": err.Error()})
+}
+
+func validateGenerateJSONRequest(req generateJSONRequest) error {
+	if req.Thinking != nil {
+		thinkingType := strings.TrimSpace(req.Thinking.Type)
+		switch thinkingType {
+		case "adaptive":
+			if req.Thinking.BudgetTokens != nil {
+				return errors.New("thinking budget_tokens is not allowed when thinking.type=adaptive")
+			}
+		case "enabled":
+			if req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens <= 0 {
+				return errors.New("thinking budget_tokens must be greater than 0 when thinking.type=enabled")
+			}
+		default:
+			return errors.New("thinking.type must be adaptive or enabled")
+		}
+	}
+
+	if req.OutputConfig != nil {
+		switch strings.TrimSpace(req.OutputConfig.Effort) {
+		case "", "low", "medium", "high", "max", "xhigh":
+		default:
+			return errors.New("output_config.effort must be one of low, medium, high, max, xhigh")
+		}
+	}
+
+	return nil
 }

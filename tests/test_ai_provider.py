@@ -339,8 +339,33 @@ def test_settings_accept_anthropic_provider():
     assert settings.ai_provider == "anthropic"
 
 
+def test_settings_reject_anthropic_adaptive_thinking_for_haiku():
+    with pytest.raises(ValueError, match="ANTHROPIC_THINKING_TYPE=adaptive is not supported for Claude Haiku 4.5"):
+        Settings(
+            app_env="test",
+            API_KEY="test-api-key",
+            ARCADEDB_ROOT_PASSWORD="test-password",
+            AI_PROVIDER="anthropic",
+            ANTHROPIC_CHAT_MODEL="claude-haiku-4-5",
+            ANTHROPIC_THINKING_TYPE="adaptive",
+        )
+
+
+def test_settings_require_budget_for_manual_thinking():
+    with pytest.raises(ValueError, match="ANTHROPIC_THINKING_BUDGET_TOKENS is required when ANTHROPIC_THINKING_TYPE=enabled"):
+        Settings(
+            app_env="test",
+            API_KEY="test-api-key",
+            ARCADEDB_ROOT_PASSWORD="test-password",
+            AI_PROVIDER="anthropic",
+            ANTHROPIC_CHAT_MODEL="claude-haiku-4-5",
+            ANTHROPIC_THINKING_TYPE="enabled",
+        )
+
+
 def test_build_ai_provider_requires_embedding_provider_for_anthropic():
     settings = Settings(
+        _env_file=None,
         app_env="test",
         API_KEY="test-api-key",
         ARCADEDB_ROOT_PASSWORD="test-password",
@@ -453,6 +478,70 @@ def test_anthropic_gateway_vetting_validates_response():
     request = provider.client.requests[0]
     assert request["json"]["temperature"] == 0.1
     assert request["json"]["user_payload_json"]["concept_name"] == "Normalizacion"
+
+
+def test_anthropic_gateway_supports_sonnet_adaptive_thinking_with_effort():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-sonnet-4-6",
+        ANTHROPIC_THINKING_TYPE="adaptive",
+        ANTHROPIC_EFFORT="medium",
+        embedding_dimensions=16,
+    )
+    provider = AnthropicGatewayProvider(settings)
+    provider.client = _GatewayCapturedClient(
+        {
+            "domain": "Programacion",
+            "topics": ["Programacion"],
+            "concepts": [],
+            "claims": [],
+            "relations": [],
+        }
+    )
+
+    asyncio.run(provider.extract("customer_id = 42", "es", ["Programacion"]))
+
+    request = provider.client.requests[0]["json"]
+    assert request["model"] == "claude-sonnet-4-6"
+    assert request["thinking"] == {"type": "adaptive"}
+    assert request["output_config"] == {"effort": "medium"}
+
+
+def test_anthropic_gateway_supports_haiku_extended_thinking_budget():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        AI_PROVIDER="anthropic",
+        EMBEDDING_PROVIDER="stub",
+        ANTHROPIC_GATEWAY_BEARER_TOKEN="gateway-secret",
+        ANTHROPIC_CHAT_MODEL="claude-haiku-4-5",
+        ANTHROPIC_THINKING_TYPE="enabled",
+        ANTHROPIC_THINKING_BUDGET_TOKENS=8000,
+        embedding_dimensions=16,
+    )
+    provider = AnthropicGatewayProvider(settings)
+    provider.client = _GatewayCapturedClient(
+        {
+            "domain": "Programacion",
+            "topics": ["Programacion"],
+            "concepts": [],
+            "claims": [],
+            "relations": [],
+        }
+    )
+
+    asyncio.run(provider.extract("customer_id = 42", "es", ["Programacion"]))
+
+    request = provider.client.requests[0]["json"]
+    assert request["model"] == "claude-haiku-4-5"
+    assert request["thinking"] == {"type": "enabled", "budget_tokens": 8000}
+    assert "output_config" not in request
 
 
 def test_anthropic_gateway_extract_reports_invalid_gateway_payload():

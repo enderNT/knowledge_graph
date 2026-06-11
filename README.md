@@ -133,6 +133,9 @@ Para usar Anthropic vía gateway Go:
 - Define `ANTHROPIC_GATEWAY_BEARER_TOKEN`
 - Define `ANTHROPIC_API_KEY`
 - Define `ANTHROPIC_CHAT_MODEL`
+- Opcionalmente define `ANTHROPIC_THINKING_TYPE`
+- Si `ANTHROPIC_THINKING_TYPE=enabled`, define también `ANTHROPIC_THINKING_BUDGET_TOKENS`
+- Opcionalmente define `ANTHROPIC_EFFORT`
 - Opcionalmente ajusta `ANTHROPIC_GATEWAY_BASE_URL` y `ANTHROPIC_TIMEOUT_SECONDS`
 
 Ejemplo mínimo:
@@ -144,8 +147,34 @@ OPENAI_API_KEY=sk-...
 OPENAI_EMBEDDINGS_MODEL=text-embedding-3-small
 ANTHROPIC_GATEWAY_BEARER_TOKEN=replace-with-an-internal-bearer-token
 ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_CHAT_MODEL=claude-sonnet
+ANTHROPIC_CHAT_MODEL=claude-sonnet-4-6
 EMBEDDING_DIMENSIONS=16
+```
+
+Ejemplo recomendado para Claude Sonnet 4.6 con esfuerzo medio:
+
+```env
+AI_PROVIDER=anthropic
+EMBEDDING_PROVIDER=openai_compatible
+OPENAI_API_KEY=sk-...
+OPENAI_EMBEDDINGS_MODEL=text-embedding-3-small
+ANTHROPIC_GATEWAY_BEARER_TOKEN=replace-with-an-internal-bearer-token
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_CHAT_MODEL=claude-sonnet-4-6
+ANTHROPIC_THINKING_TYPE=adaptive
+ANTHROPIC_EFFORT=medium
+```
+
+Ejemplo para Claude Haiku 4.5 con pensamiento extendido:
+
+```env
+AI_PROVIDER=anthropic
+EMBEDDING_PROVIDER=stub
+ANTHROPIC_GATEWAY_BEARER_TOKEN=replace-with-an-internal-bearer-token
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_CHAT_MODEL=claude-haiku-4-5
+ANTHROPIC_THINKING_TYPE=enabled
+ANTHROPIC_THINKING_BUDGET_TOKENS=8000
 ```
 
 Variables del `knowledge MCP`:
@@ -173,6 +202,9 @@ Variables del `anthropic-gateway`:
 - `ANTHROPIC_GATEWAY_BEARER_TOKEN`
 - `ANTHROPIC_API_KEY`
 - `ANTHROPIC_CHAT_MODEL`
+- `ANTHROPIC_THINKING_TYPE=adaptive|enabled`
+- `ANTHROPIC_THINKING_BUDGET_TOKENS` obligatorio si `ANTHROPIC_THINKING_TYPE=enabled`
+- `ANTHROPIC_EFFORT=low|medium|high|max|xhigh`
 - `ANTHROPIC_TIMEOUT_SECONDS=180`
 
 Health checks del `anthropic-gateway`:
