@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -8,6 +10,8 @@ from fastapi import HTTPException
 from app.ai_provider import AIProvider
 from app.config import Settings
 from app.learning_context import TutorContextBuilder
+
+logger = logging.getLogger(__name__)
 from app.pedagogical_assessment import PedagogicalAssessmentService
 from app.pedagogical_context import PedagogicalContextBuilder
 from app.schemas import (
@@ -52,6 +56,7 @@ from app.schemas import (
 )
 from app.spaced_repetition import SpacedRepetitionService
 from app.store import KnowledgeStore
+from app.trace import bind
 from app.utils import make_prefixed_id, normalize_text, utcnow_iso
 
 
@@ -116,6 +121,12 @@ class AdaptiveLearningService:
         self,
         payload: AdaptiveSessionStartRequest,
     ) -> AdaptiveSessionStartResponse:
+        bind(step="start_session")
+        t0 = time.monotonic()
+        logger.info(
+            "adaptive session starting",
+            extra={"user_id": payload.user_id, "study_mode": payload.study_mode, "domain_hint": payload.domain_hint},
+        )
         tutor_context = await self._resolve_tutor_context(payload)
         pedagogical_context = await self._store.get_pedagogical_context(user_id=payload.user_id)
         review_candidates = await self._review_candidates_for_mode(
@@ -177,6 +188,18 @@ class AdaptiveLearningService:
             interaction_events=[],
             block_result=None,
         )
+        bind(run_id=session.session_id)
+        logger.info(
+            "adaptive session created",
+            extra={
+                "session_id": session.session_id,
+                "user_id": session.user_id,
+                "study_mode": session.study_mode,
+                "block_id": block.block_id,
+                "target_concept": block.plan.target_concept_name,
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
         return AdaptiveSessionStartResponse(
             session=session,
             current_block=block,
@@ -196,9 +219,19 @@ class AdaptiveLearningService:
         session_id: str,
         payload: AdaptiveBlockSubmissionRequest,
     ) -> AdaptiveBlockSubmissionResponse:
+        bind(run_id=session_id, step="submit_block")
+        t0 = time.monotonic()
+        logger.info(
+            "block submission received",
+            extra={"session_id": session_id, "block_id": payload.block_id, "items_count": len(payload.submissions)},
+        )
         session = await self.get_session(session_id)
         current_block = session.current_block
         if current_block is None or current_block.block_id != payload.block_id:
+            logger.warning(
+                "block mismatch",
+                extra={"session_id": session_id, "submitted": payload.block_id, "current": current_block.block_id if current_block else None},
+            )
             raise HTTPException(status_code=409, detail="current adaptive block mismatch")
 
         item_map = {item.item_id: item for item in current_block.items}
@@ -348,6 +381,19 @@ class AdaptiveLearningService:
             }
         )
         await self._store.upsert_adaptive_session(updated_session)
+        logger.info(
+            "block submission complete",
+            extra={
+                "session_id": session_id,
+                "block_id": payload.block_id,
+                "verdict": block_verdict,
+                "score": block_score,
+                "session_status": updated_session.status,
+                "session_closed": session_closed,
+                "completed_blocks": updated_session.summary.completed_blocks,
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
         return AdaptiveBlockSubmissionResponse(
             session=updated_session,
             block_result=block_result,

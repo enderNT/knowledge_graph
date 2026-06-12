@@ -5,6 +5,7 @@ import contextlib
 import logging
 
 from app.ingestion import IngestionService
+from app.trace import bind, clear
 
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,11 @@ class IngestionWorker:
     async def _run(self) -> None:
         while self._running:
             job_id = await self.queue.get()
+            bind(run_id=job_id, step="dequeue")
             try:
                 await self.service.process_job(job_id)
             except Exception:
-                logger.exception("Failed processing job %s", job_id)
+                logger.exception("job failed", extra={"job_id": job_id})
             finally:
+                clear()
                 self.queue.task_done()

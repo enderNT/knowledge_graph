@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -10,6 +12,8 @@ import httpx
 from app.config import Settings
 from app.schemas import ExtractionResult, PedagogicalEvidenceDecision
 from app.utils import dedupe_preserve_order, fit_embedding_dimensions, normalize_text, stable_embedding
+
+logger = logging.getLogger(__name__)
 
 
 _CONNECTOR_TOKENS = {"a", "al", "de", "del", "e", "la", "las", "los", "y"}
@@ -676,15 +680,26 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         )
 
     async def embed(self, text: str) -> list[float]:
-        response = await self.client.post(
-            "embeddings",
-            json={
-                "model": self.settings.openai_embeddings_model,
-                "input": text,
-                "dimensions": self.settings.embedding_dimensions,
-            },
-        )
-        response.raise_for_status()
+        t0 = time.monotonic()
+        try:
+            response = await self.client.post(
+                "embeddings",
+                json={
+                    "model": self.settings.openai_embeddings_model,
+                    "input": text,
+                    "dimensions": self.settings.embedding_dimensions,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "embed http error",
+                extra={"status": exc.response.status_code, "duration_ms": int((time.monotonic() - t0) * 1000)},
+            )
+            raise
+        except httpx.TimeoutException:
+            logger.error("embed timeout", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
+            raise
         payload = response.json()
         embedding = payload["data"][0]["embedding"]
         return fit_embedding_dimensions(embedding, self.settings.embedding_dimensions)
@@ -735,6 +750,7 @@ class StructuredLLMProvider(AIProvider):
             "tags": tags,
             "text": text,
         }
+        t0 = time.monotonic()
         try:
             content = await self._generate_json(
                 system_prompt=system_prompt,
@@ -742,9 +758,11 @@ class StructuredLLMProvider(AIProvider):
                 temperature=None,
             )
             result = ExtractionResult.model_validate(content)
+            logger.debug("llm extract done", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
             return self._sanitize_llm_extraction(result, text, tags)
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
+            logger.error("llm extract failed", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message})
             raise ValueError(f"llm extraction failed: {message}") from exc
 
     async def vet_pedagogical_evidence(
@@ -774,6 +792,7 @@ class StructuredLLMProvider(AIProvider):
             "claim_text": claim_text,
             "supporting_quote": supporting_quote,
         }
+        t0 = time.monotonic()
         try:
             content = await self._generate_json(
                 system_prompt=system_prompt,
@@ -791,9 +810,11 @@ class StructuredLLMProvider(AIProvider):
                     status="rejected",
                     review_notes=[*decision.review_notes, "empty_statement_or_supporting_quote"],
                 )
+            logger.debug("llm vet done", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "status": decision.status})
             return decision.model_copy(update={"statement": statement, "supporting_quote": quote})
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
+            logger.error("llm vet failed", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message})
             raise ValueError(f"llm pedagogical evidence vetting failed: {message}") from exc
 
     @abstractmethod
@@ -973,13 +994,26 @@ class OpenAICompatibleProvider(StructuredLLMProvider):
         if temperature is not None:
             payload["temperature"] = temperature
 
-        response = await self.client.post("chat/completions", json=payload)
-        response.raise_for_status()
+        t0 = time.monotonic()
+        logger.debug("openai request", extra={"model": self.settings.openai_chat_model})
+        try:
+            response = await self.client.post("chat/completions", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "openai http error",
+                extra={"status": exc.response.status_code, "duration_ms": int((time.monotonic() - t0) * 1000)},
+            )
+            raise
+        except httpx.TimeoutException:
+            logger.error("openai timeout", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
+            raise
         raw_payload = response.json()
         content = raw_payload["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         if not isinstance(parsed, dict):
             raise ValueError("structured response must be a JSON object")
+        logger.debug("openai response", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "model": self.settings.openai_chat_model})
         return parsed
 
     async def close(self) -> None:
@@ -1018,12 +1052,26 @@ class AnthropicGatewayProvider(StructuredLLMProvider):
             temperature=temperature,
         )
 
-        response = await self.client.post("v1/generate-json", json=payload)
-        response.raise_for_status()
+        t0 = time.monotonic()
+        model = self.settings.anthropic_chat_model or ""
+        logger.debug("anthropic request", extra={"model": model})
+        try:
+            response = await self.client.post("v1/generate-json", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "anthropic http error",
+                extra={"status": exc.response.status_code, "duration_ms": int((time.monotonic() - t0) * 1000)},
+            )
+            raise
+        except httpx.TimeoutException:
+            logger.error("anthropic timeout", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
+            raise
         raw_payload = response.json()
         content = raw_payload["content_json"]
         if not isinstance(content, dict):
             raise ValueError("gateway content_json must be a JSON object")
+        logger.debug("anthropic response", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "model": model})
         return content
 
     def _build_gateway_payload(

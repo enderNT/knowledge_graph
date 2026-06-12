@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.ai_provider import AIProvider, build_ai_provider
 from app.arcadedb_client import ArcadeDBClient
 from app.config import Settings, get_settings
 from app.ingestion import IngestionService
+from app.logging_config import setup_logging
 from app.store import ArcadeKnowledgeStore, InMemoryKnowledgeStore, KnowledgeStore
+from app.trace import bind, clear
 from app.worker import IngestionWorker
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,6 +66,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        setup_logging(settings.log_level)
+        logger.info("app starting", extra={"env": settings.app_env, "ai_provider": settings.ai_provider})
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=settings.queue_maxsize)
         arcade_client = None
         actual_store = store
@@ -91,9 +99,11 @@ def create_app(
                 name="arcadedb-bootstrap",
             )
         await worker.start()
+        logger.info("app ready")
         try:
             yield
         finally:
+            logger.info("app shutting down")
             await worker.stop()
             if app.state.services.bootstrap_task:
                 app.state.services.bootstrap_task.cancel()
@@ -106,6 +116,15 @@ def create_app(
             await actual_ai_provider.close()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def request_trace_middleware(request: Request, call_next):
+        req_id = request.headers.get("x-request-id") or f"req-{uuid.uuid4().hex[:12]}"
+        bind(run_id=req_id, step="request")
+        response = await call_next(request)
+        clear()
+        response.headers["x-request-id"] = req_id
+        return response
 
     from app.routers import adaptive, concepts, deletions, episodes, health, jobs, knowledge, pedagogical, search, sr
 

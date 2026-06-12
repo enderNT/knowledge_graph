@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from collections import Counter
 
 from app.ai_provider import AIProvider
@@ -15,7 +17,10 @@ from app.schemas import (
     UpsertConceptRequest,
 )
 from app.store import ConceptConflictError, KnowledgeStore
+from app.trace import bind
 from app.utils import make_prefixed_id, normalize_text
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionService:
@@ -46,22 +51,45 @@ class IngestionService:
         )
         await self.store.create_job(uid=job_id, episode_id=episode_id, status="queued")
         await self.queue.put(job_id)
+        logger.info(
+            "fragment queued",
+            extra={"job_id": job_id, "episode_id": episode_id, "tags": request.tags, "language": request.language},
+        )
         return AddKnowledgeFragmentAccepted(episode_id=episode_id, job_id=job_id, status="queued")
 
     async def process_job(self, job_id: str) -> None:
         job = await self.store.get_job(job_id)
         if not job:
+            logger.warning("job not found", extra={"job_id": job_id})
             return
         episode = await self.store.get_episode(job.episode_id)
         if not episode:
             await self.store.update_job(job_id, status="failed", error="episode not found")
+            logger.error("episode not found for job", extra={"job_id": job_id, "episode_id": job.episode_id})
             return
 
+        bind(run_id=job_id, step="start")
+        logger.info("job started", extra={"episode_id": episode.uid, "language": episode.language, "tags": episode.tags})
+        t0 = time.monotonic()
         await self.store.update_job(job_id, status="processing")
         try:
+            bind(step="embed_episode")
             episode_embedding = await self.ai_provider.embed(episode.text)
             await self.store.update_episode(episode.uid, status="processing", embedding=episode_embedding)
+            logger.debug("episode embedded", extra={"episode_id": episode.uid})
+
+            bind(step="extract")
             extraction = await self.ai_provider.extract(episode.text, episode.language, episode.tags)
+            logger.info(
+                "extraction complete",
+                extra={
+                    "domain": extraction.domain,
+                    "concepts_count": len(extraction.concepts),
+                    "claims_count": len(extraction.claims),
+                    "relations_count": len(extraction.relations),
+                },
+            )
+
             summary = IngestionSummary(episode_id=episode.uid, domain=extraction.domain)
             resolved_concepts: dict[str, ConceptResolution] = {}
             claim_support_counts = Counter(
@@ -71,6 +99,7 @@ class IngestionService:
             )
             linked_claim_counts = Counter()
 
+            bind(step="resolve_concepts")
             for extracted_concept in extraction.concepts:
                 concept_embedding = await self.ai_provider.embed(
                     "\n".join(
@@ -101,7 +130,15 @@ class IngestionService:
                     candidates,
                 )
                 resolved_concepts[extracted_concept.canonical_name] = resolution
+                logger.debug(
+                    "concept resolved",
+                    extra={"concept": extracted_concept.canonical_name, "strategy": resolution.strategy},
+                )
                 if resolution.strategy in {"ambiguous", "rejected"}:
+                    logger.warning(
+                        "concept needs review",
+                        extra={"concept": extracted_concept.canonical_name, "strategy": resolution.strategy, "reason": resolution.needs_review_reason},
+                    )
                     summary.needs_review.append(resolution.needs_review_reason or extracted_concept.canonical_name)
                     continue
                 if not resolution.concept:
@@ -116,6 +153,16 @@ class IngestionService:
                 else:
                     summary.updated_concepts.append(resolution.concept.canonical_name)
 
+            logger.info(
+                "concepts resolved",
+                extra={
+                    "n_created": len(summary.created_concepts),
+                    "n_updated": len(summary.updated_concepts),
+                    "needs_review": len(summary.needs_review),
+                },
+            )
+
+            bind(step="create_claims")
             for extracted_claim in extraction.claims:
                 claim_embedding = await self.ai_provider.embed(extracted_claim.text)
                 claim = await self.store.create_claim(
@@ -126,6 +173,7 @@ class IngestionService:
                     supporting_quote=extracted_claim.supporting_quote,
                 )
                 summary.created_claims += 1
+                logger.debug("claim created", extra={"claim_uid": claim.uid, "explains": extracted_claim.explains})
                 await self.store.link_claim_to_episode(claim.uid, episode.uid, extracted_claim.confidence)
                 for concept_name in extracted_claim.explains:
                     concept_resolution = resolved_concepts.get(concept_name)
@@ -136,6 +184,7 @@ class IngestionService:
                             extracted_claim.confidence,
                         )
                         linked_claim_counts[concept_name] += 1
+                        bind(step="vet_evidence")
                         await self._persist_pedagogical_evidence(
                             episode_id=episode.uid,
                             claim_uid=claim.uid,
@@ -146,6 +195,7 @@ class IngestionService:
                             language=episode.language,
                         )
 
+            bind(step="fill_evidence_claims")
             for extracted_concept in extraction.concepts:
                 concept_resolution = resolved_concepts.get(extracted_concept.canonical_name)
                 if not concept_resolution or not concept_resolution.concept:
@@ -164,6 +214,10 @@ class IngestionService:
                     supporting_quote=quote,
                 )
                 summary.created_claims += 1
+                logger.debug(
+                    "evidence claim created",
+                    extra={"claim_uid": claim.uid, "concept": extracted_concept.canonical_name},
+                )
                 await self.store.link_claim_to_episode(claim.uid, episode.uid, extracted_concept.confidence)
                 await self.store.link_claim_to_concept(
                     claim.uid,
@@ -171,6 +225,7 @@ class IngestionService:
                     extracted_concept.confidence,
                 )
                 linked_claim_counts[extracted_concept.canonical_name] += 1
+                bind(step="vet_evidence")
                 await self._persist_pedagogical_evidence(
                     episode_id=episode.uid,
                     claim_uid=claim.uid,
@@ -181,6 +236,7 @@ class IngestionService:
                     language=episode.language,
                 )
 
+            bind(step="create_relations")
             for relation in extraction.relations:
                 from_resolution = resolved_concepts.get(relation.from_name)
                 to_resolution = resolved_concepts.get(relation.to_name)
@@ -206,10 +262,31 @@ class IngestionService:
                         ]
                     )
 
+            bind(step="finalize")
             await self.store.update_episode(episode.uid, status="processed")
             await self.store.update_job(job_id, status="completed", result=summary)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "job completed",
+                extra={
+                    "duration_ms": elapsed_ms,
+                    "created_concepts": len(summary.created_concepts),
+                    "updated_concepts": len(summary.updated_concepts),
+                    "created_claims": summary.created_claims,
+                    "relations": len(summary.relations),
+                    "needs_review": len(summary.needs_review),
+                    "domain": summary.domain,
+                },
+            )
         except Exception as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             error_message = str(exc).strip() or exc.__class__.__name__
+            bind(step="failed")
+            logger.error(
+                "job failed",
+                extra={"duration_ms": elapsed_ms, "error": error_message},
+                exc_info=True,
+            )
             await self.store.update_episode(episode.uid, status="failed", error_message=error_message)
             await self.store.update_job(job_id, status="failed", error=error_message)
             raise
@@ -313,6 +390,10 @@ class IngestionService:
             claim_text=claim_text,
             supporting_quote=effective_quote,
             language=language,
+        )
+        logger.debug(
+            "evidence vetted",
+            extra={"concept": concept_name, "status": decision.status, "kind": decision.kind},
         )
         if decision.status != "approved":
             return
