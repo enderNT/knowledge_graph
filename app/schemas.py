@@ -878,6 +878,35 @@ class AdaptiveSessionSummary(BaseModel):
     closure_reason: str | None = None
 
 
+class LearnerResponseGradingDecision(BaseModel):
+    coverage: float = Field(ge=0.0, le=1.0)
+    precision: float = Field(ge=0.0, le=1.0)
+    score_0_to_1: float = Field(ge=0.0, le=1.0)
+    matched_points: list[str] = Field(default_factory=list)
+    missing_points: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+    used_llm: bool = False
+
+    @field_validator("coverage", "precision", "score_0_to_1", mode="before")
+    @classmethod
+    def _coerce_unit_interval(cls, value: Any, info: Any) -> Any:
+        return rescale_unit_interval(value, field_name=info.field_name)
+
+
+class GeneratedAdaptiveItem(BaseModel):
+    prompt: str
+    choices: list[str] = Field(default_factory=list)
+    expected: list[str] = Field(default_factory=list)
+    correct_choice_indexes: list[int] = Field(default_factory=list)
+    boolean_answer: bool | None = None
+    evidence_unit_id: str = ""
+    rationale: str = ""
+
+
+class GeneratedAdaptiveBlock(BaseModel):
+    items: list[GeneratedAdaptiveItem] = Field(default_factory=list)
+
+
 class AdaptiveSessionSnapshot(BaseModel):
     session_id: str
     user_id: str
@@ -890,6 +919,7 @@ class AdaptiveSessionSnapshot(BaseModel):
     current_block: AdaptiveBlockResponse | None = None
     block_history: list[AdaptiveBlockResult] = Field(default_factory=list)
     summary: AdaptiveSessionSummary = Field(default_factory=AdaptiveSessionSummary)
+    served_evidence_uids: list[str] = Field(default_factory=list)
     status: Literal["active", "closed"] = "active"
     opened_at: str
     updated_at: str

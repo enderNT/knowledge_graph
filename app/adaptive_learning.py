@@ -34,6 +34,7 @@ from app.schemas import (
     AdaptiveNextStepPolicy,
     AdaptiveScaffoldingPolicy,
     AdaptiveVerdict,
+    GeneratedAdaptiveBlock,
     PedagogicalConceptState,
     PedagogicalContextSnapshot,
     PedagogicalDimension,
@@ -152,7 +153,10 @@ class AdaptiveLearningService:
             review_blocks_completed=0,
             review_blocks_target=review_target,
             review_candidates=review_candidates,
+            served_evidence_uids=[],
+            language=payload.language,
         )
+        initial_served_uids = [uid for key in block.answer_keys for uid in key.evidence_unit_ids]
         session = AdaptiveSessionSnapshot(
             session_id=make_prefixed_id("ads"),
             user_id=payload.user_id,
@@ -164,6 +168,7 @@ class AdaptiveLearningService:
             tutor_context=tutor_context,
             current_block=block,
             block_history=[],
+            served_evidence_uids=initial_served_uids,
             summary=AdaptiveSessionSummary(
                 total_blocks=payload.constraints.max_blocks,
                 completed_blocks=0,
@@ -245,11 +250,13 @@ class AdaptiveLearningService:
             submission = submission_map.get(item.item_id)
             if submission is None:
                 raise HTTPException(status_code=422, detail=f"missing submission for {item.item_id}")
-            result = self._evaluate_item(
+            result = await self._evaluate_item(
                 item=item,
                 answer_key=key_map[item.item_id],
                 submission=submission,
                 interaction=event_map.get(item.item_id, AdaptiveInteractionEvent(item_id=item.item_id)),
+                concept_name=current_block.plan.target_concept_name,
+                language=session.language,
             )
             item_results.append(result)
             dimension_scores[item.target_dimension].append(result.score_0_to_1)
@@ -350,6 +357,8 @@ class AdaptiveLearningService:
                 review_blocks_completed=review_blocks_completed,
                 review_blocks_target=session.summary.review_blocks_target,
                 review_candidates=review_candidates,
+                served_evidence_uids=session.served_evidence_uids,
+                language=session.language,
             )
             await self._store.append_adaptive_block_attempt(
                 session_id=session_id,
@@ -360,10 +369,16 @@ class AdaptiveLearningService:
                 block_result=None,
             )
 
+        new_served_uids = (
+            [*session.served_evidence_uids, *[uid for key in next_block.answer_keys for uid in key.evidence_unit_ids]]
+            if next_block is not None
+            else session.served_evidence_uids
+        )
         updated_session = session.model_copy(
             update={
                 "current_block": next_block,
                 "block_history": [*session.block_history, block_result],
+                "served_evidence_uids": new_served_uids,
                 "summary": session.summary.model_copy(
                     update={
                         "completed_blocks": session.summary.completed_blocks + 1,
@@ -513,6 +528,8 @@ class AdaptiveLearningService:
         review_blocks_completed: int,
         review_blocks_target: int,
         review_candidates: list[DueSRItem],
+        served_evidence_uids: list[str],
+        language: str = "es",
     ) -> AdaptiveBlockResponse:
         if review_blocks_completed < review_blocks_target:
             for due_item in review_candidates:
@@ -521,6 +538,8 @@ class AdaptiveLearningService:
                     constraints=constraints,
                     pedagogical_context=pedagogical_context,
                     due_item=due_item,
+                    served_evidence_uids=served_evidence_uids,
+                    language=language,
                 )
                 if review_block is not None:
                     return review_block
@@ -539,11 +558,13 @@ class AdaptiveLearningService:
             previous_result=previous_result,
             block_purpose="new_content",
         )
-        return self._generate_block(
+        return await self._generate_block(
             tutor_context=route_tutor_context,
             concept_state=concept_state,
             constraints=constraints,
             decision=decision,
+            served_evidence_uids=served_evidence_uids,
+            language=language,
         )
 
     async def _review_candidates_for_mode(
@@ -566,6 +587,8 @@ class AdaptiveLearningService:
         constraints: AdaptiveSessionConstraints,
         pedagogical_context: PedagogicalContextSnapshot,
         due_item: DueSRItem,
+        served_evidence_uids: list[str],
+        language: str = "es",
     ) -> AdaptiveBlockResponse | None:
         tutor_context = await self._resolve_tutor_context_for_concept(
             concept_uid=due_item.concept_uid,
@@ -587,11 +610,13 @@ class AdaptiveLearningService:
             forced_dimension=due_item.dimension,
             due_item=due_item,
         )
-        return self._generate_block(
+        return await self._generate_block(
             tutor_context=tutor_context,
             concept_state=concept_state,
             constraints=constraints,
             decision=decision,
+            served_evidence_uids=served_evidence_uids,
+            language=language,
         )
 
     async def _resolve_tutor_context_for_concept(
@@ -723,13 +748,15 @@ class AdaptiveLearningService:
             corrective_explanation_seed="",
         )
 
-    def _generate_block(
+    async def _generate_block(
         self,
         *,
         tutor_context: TutorContextResponse,
         concept_state: PedagogicalConceptState,
         constraints: AdaptiveSessionConstraints,
         decision: AdaptivePlannerDecision,
+        served_evidence_uids: list[str],
+        language: str = "es",
     ) -> AdaptiveBlockResponse:
         block_id = make_prefixed_id("blk")
         plan = AdaptiveBlockPlan(
@@ -762,22 +789,110 @@ class AdaptiveLearningService:
         )
         if not evidence:
             raise RuntimeError("validated tutor context did not provide pedagogical evidence")
+
+        evidence_units_for_llm = [
+            {"uid": unit.uid, "statement": unit.statement, "supporting_quote": unit.supporting_quote}
+            for unit in evidence
+        ]
+        t0 = time.monotonic()
+        llm_block = await self._ai_provider.generate_adaptive_block(
+            evidence_units=evidence_units_for_llm,
+            target_dimension=decision.primary_dimension,
+            difficulty=decision.difficulty,
+            question_types=[qt for qt in decision.question_types],
+            served_evidence_uids=served_evidence_uids,
+            item_count=item_count,
+            concept_name=concept_state.concept_name,
+            language=language,
+        )
+        logger.debug(
+            "llm block generation",
+            extra={
+                "block_id": block_id,
+                "items_generated": len(llm_block.items),
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
+
+        evidence_by_uid = {unit.uid: unit for unit in evidence}
+        all_evidence_statements = [unit.statement for unit in evidence]
+        _grading_mode_for_type = {
+            "multiple_choice_single": "deterministic_choice",
+            "multiple_choice_multi": "partial_multi_choice",
+            "true_false": "deterministic_boolean",
+            "cloze": "exact_text",
+            "open": "rubric_structured",
+        }
+
         items: list[AdaptiveBlockItem] = []
         answer_keys: list[AdaptiveBlockAnswerKey] = []
         for index in range(item_count):
             question_type = decision.question_types[index % len(decision.question_types)]
-            item, answer_key = self._assessment.build_adaptive_item(
-                item_id=f"{block_id}_item_{index + 1}",
-                question_type=question_type,
-                concept_uid=concept_state.concept_uid,
-                concept_name=concept_state.concept_name,
-                difficulty=decision.difficulty,
-                dimension=decision.primary_dimension,
-                unit=evidence[index % len(evidence)],
-                alternative_units=evidence,
-            )
-            items.append(item)
-            answer_keys.append(answer_key)
+            use_llm_item = False
+            if index < len(llm_block.items):
+                gen = llm_block.items[index]
+                unit_for_gen = evidence_by_uid.get(gen.evidence_unit_id) or evidence[index % len(evidence)]
+                valid = bool(gen.prompt.strip())
+                if valid and question_type in {"multiple_choice_single", "multiple_choice_multi"} and gen.choices:
+                    ok, warns = self._assessment.validate_choice_set(
+                        choices=gen.choices,
+                        correct_indexes=gen.correct_choice_indexes,
+                        correct_statement=gen.expected[0] if gen.expected else unit_for_gen.statement,
+                        evidence_context=all_evidence_statements,
+                    )
+                    if not ok:
+                        logger.warning(
+                            "llm mcq validation failed, falling back to deterministic",
+                            extra={"block_id": block_id, "item_index": index, "reasons": warns},
+                        )
+                        valid = False
+                elif valid and question_type in {"multiple_choice_single", "multiple_choice_multi"} and not gen.choices:
+                    valid = False
+                if valid:
+                    use_llm_item = True
+                    rubric = self._assessment._rubric_for_statement(
+                        gen.expected[0] if gen.expected else unit_for_gen.statement
+                    )
+                    evidence_uid = gen.evidence_unit_id if gen.evidence_unit_id else unit_for_gen.uid
+                    item = AdaptiveBlockItem(
+                        item_id=f"{block_id}_item_{index + 1}",
+                        question_type=question_type,
+                        concept_uid=concept_state.concept_uid,
+                        target_dimension=decision.primary_dimension,
+                        difficulty=decision.difficulty,
+                        prompt=gen.prompt,
+                        choices=gen.choices,
+                        rubric={"main_signal": decision.primary_dimension},
+                        grounding_refs=[evidence_uid],
+                        metadata={"generated_by": "llm"},
+                    )
+                    answer_key = AdaptiveBlockAnswerKey(
+                        item_id=f"{block_id}_item_{index + 1}",
+                        grading_mode=_grading_mode_for_type.get(question_type, "rubric_structured"),
+                        expected=gen.expected if gen.expected else [unit_for_gen.statement],
+                        correct_choice_indexes=gen.correct_choice_indexes,
+                        boolean_answer=gen.boolean_answer,
+                        rationale=gen.rationale,
+                        evidence_unit_ids=[evidence_uid],
+                        grading_rubric=rubric,
+                    )
+                    items.append(item)
+                    answer_keys.append(answer_key)
+
+            if not use_llm_item:
+                item, answer_key = self._assessment.build_adaptive_item(
+                    item_id=f"{block_id}_item_{index + 1}",
+                    question_type=question_type,
+                    concept_uid=concept_state.concept_uid,
+                    concept_name=concept_state.concept_name,
+                    difficulty=decision.difficulty,
+                    dimension=decision.primary_dimension,
+                    unit=evidence[index % len(evidence)],
+                    alternative_units=evidence,
+                )
+                items.append(item)
+                answer_keys.append(answer_key)
+
         return AdaptiveBlockResponse(
             block_id=block_id,
             plan=plan,
@@ -821,13 +936,15 @@ class AdaptiveLearningService:
                     logger.warning("submitted choice text not found in item choices", extra={"value": value[:80]})
         return resolved
 
-    def _evaluate_item(
+    async def _evaluate_item(
         self,
         *,
         item: AdaptiveBlockItem,
         answer_key: AdaptiveBlockAnswerKey,
         submission: AdaptiveItemSubmission,
         interaction: AdaptiveInteractionEvent,
+        concept_name: str = "",
+        language: str = "es",
     ) -> AdaptiveItemResult:
         selected_indexes = self._resolve_choice_indexes(submission.selected_choices, item.choices)
         self._warn_missing_submission_field(item, submission)
@@ -835,6 +952,7 @@ class AdaptiveLearningService:
         coverage = 0.0
         precision = 0.0
         error_signal = 0.15
+        used_llm = False
         if item.question_type == "multiple_choice_single":
             base_score = 1.0 if selected_indexes[:1] == answer_key.correct_choice_indexes[:1] else 0.0
             coverage = precision = base_score
@@ -854,7 +972,25 @@ class AdaptiveLearningService:
             error_signal = 1.0 if false_positive == 0 else (0.45 if false_positive == 1 else 0.15)
         else:
             learner_text = submission.response_text or ""
-            coverage, precision, base_score = self._assessment.grade_open_response(learner_text, answer_key)
+            expected_statement = answer_key.expected[0] if answer_key.expected else ""
+            pedagogical_evidence = [str(p) for p in answer_key.grading_rubric.get("points", [])]
+            grading = await self._ai_provider.grade_learner_response(
+                learner_response=learner_text,
+                expected_statement=expected_statement,
+                pedagogical_evidence=pedagogical_evidence,
+                concept_name=concept_name,
+                question_type=item.question_type,
+                language=language,
+            )
+            coverage = grading.coverage
+            precision = grading.precision
+            base_score = grading.score_0_to_1
+            used_llm = grading.used_llm
+            if grading.reasoning:
+                logger.debug(
+                    "llm grading reasoning",
+                    extra={"item_id": item.item_id, "used_llm": used_llm, "reasoning": grading.reasoning[:200]},
+                )
             if item.question_type == "open":
                 support_signal = self._support_signal(interaction)
                 stability_signal = 1.0 if not interaction.retry_used else 0.6
@@ -882,6 +1018,7 @@ class AdaptiveLearningService:
                 "support": round(self._support_signal(interaction), 2),
                 "error_type": round(error_signal, 2),
                 "stability": 1.0 if not interaction.retry_used else 0.6,
+                "used_llm": 1.0 if used_llm else 0.0,
             },
         )
 

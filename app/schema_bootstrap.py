@@ -164,6 +164,7 @@ def build_schema_commands(settings: Settings) -> list[str]:
             "CREATE PROPERTY AdaptiveSession.current_block_json IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.block_history_json IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.summary_json IF NOT EXISTS STRING",
+            "CREATE PROPERTY AdaptiveSession.served_evidence_json IF NOT EXISTS STRING",
             "CREATE PROPERTY AdaptiveSession.opened_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY AdaptiveSession.updated_at IF NOT EXISTS DATETIME",
             "CREATE PROPERTY AdaptiveBlockAttempt.session_id IF NOT EXISTS STRING",

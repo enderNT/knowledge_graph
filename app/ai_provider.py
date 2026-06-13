@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.schemas import ExtractionResult, PedagogicalEvidenceDecision
+from app.schemas import ExtractionResult, GeneratedAdaptiveBlock, LearnerResponseGradingDecision, PedagogicalEvidenceDecision
 from app.utils import dedupe_preserve_order, fit_embedding_dimensions, normalize_text, stable_embedding
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,34 @@ class AIProvider(ABC):
     ) -> PedagogicalEvidenceDecision:
         raise NotImplementedError
 
+    @abstractmethod
+    async def grade_learner_response(
+        self,
+        *,
+        learner_response: str,
+        expected_statement: str,
+        pedagogical_evidence: list[str],
+        concept_name: str,
+        question_type: str,
+        language: str,
+    ) -> LearnerResponseGradingDecision:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def generate_adaptive_block(
+        self,
+        *,
+        evidence_units: list[dict[str, str]],
+        target_dimension: str,
+        difficulty: str,
+        question_types: list[str],
+        served_evidence_uids: list[str],
+        item_count: int,
+        concept_name: str,
+        language: str,
+    ) -> GeneratedAdaptiveBlock:
+        raise NotImplementedError
+
     async def close(self) -> None:
         return None
 
@@ -180,6 +208,52 @@ class StubAIProvider(AIProvider):
             status="approved",
             review_notes=[],
         )
+
+    async def grade_learner_response(
+        self,
+        *,
+        learner_response: str,
+        expected_statement: str,
+        pedagogical_evidence: list[str],
+        concept_name: str,
+        question_type: str,
+        language: str,
+    ) -> LearnerResponseGradingDecision:
+        from app.pedagogical_assessment import PedagogicalAssessmentService
+        from app.schemas import AdaptiveBlockAnswerKey
+        assessment = PedagogicalAssessmentService()
+        rubric = assessment._rubric_for_statement(expected_statement)
+        answer_key = AdaptiveBlockAnswerKey(
+            item_id="stub",
+            grading_mode="rubric_structured",
+            expected=[expected_statement],
+            grading_rubric=rubric,
+        )
+        coverage, precision, score = assessment.grade_open_response(learner_response, answer_key)
+        matched, missing = assessment._score_rubric(learner_response, rubric)
+        return LearnerResponseGradingDecision(
+            coverage=coverage,
+            precision=precision,
+            score_0_to_1=score,
+            matched_points=matched,
+            missing_points=missing,
+            reasoning="stub: token overlap against rubric",
+            used_llm=False,
+        )
+
+    async def generate_adaptive_block(
+        self,
+        *,
+        evidence_units: list[dict[str, str]],
+        target_dimension: str,
+        difficulty: str,
+        question_types: list[str],
+        served_evidence_uids: list[str],
+        item_count: int,
+        concept_name: str,
+        language: str,
+    ) -> GeneratedAdaptiveBlock:
+        return GeneratedAdaptiveBlock(items=[])
 
     def refine_extraction(
         self,
@@ -816,6 +890,140 @@ class StructuredLLMProvider(AIProvider):
             message = str(exc).strip() or exc.__class__.__name__
             logger.error("llm vet failed", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message})
             raise ValueError(f"llm pedagogical evidence vetting failed: {message}") from exc
+
+    async def grade_learner_response(
+        self,
+        *,
+        learner_response: str,
+        expected_statement: str,
+        pedagogical_evidence: list[str],
+        concept_name: str,
+        question_type: str,
+        language: str,
+    ) -> LearnerResponseGradingDecision:
+        system_prompt = (
+            "You are a pedagogical grader for an adaptive learning system. "
+            "Evaluate the learner's response against the expected statement and provided evidence. "
+            "Return only JSON with keys: coverage, precision, score_0_to_1, matched_points, missing_points, reasoning. "
+            "coverage: fraction of expected evidence points addressed by the learner (0.0-1.0). "
+            "precision: fraction of the learner's answer that is factually accurate per the evidence (0.0-1.0). "
+            "score_0_to_1: overall correctness score (0.0-1.0). "
+            "matched_points: list of evidence points the learner adequately covered. "
+            "missing_points: list of evidence points the learner missed or got wrong. "
+            "reasoning: one-sentence explanation of your judgment. "
+            "Use ONLY the provided evidence. Do not invent or assume facts not present in the evidence. "
+            "Accept paraphrases, synonyms, and conceptually equivalent formulations as correct. "
+            "Grade for understanding, not verbatim recall."
+        )
+        user_prompt = {
+            "language": language,
+            "concept_name": concept_name,
+            "question_type": question_type,
+            "expected_statement": expected_statement,
+            "pedagogical_evidence": pedagogical_evidence,
+            "learner_response": learner_response,
+        }
+        t0 = time.monotonic()
+        try:
+            content = await self._generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.1,
+            )
+            decision = LearnerResponseGradingDecision.model_validate({**content, "used_llm": True})
+            logger.debug("llm grade done", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
+            return decision
+        except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            logger.error("llm grade failed, using stub fallback", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message})
+            return await self.fallback_provider.grade_learner_response(
+                learner_response=learner_response,
+                expected_statement=expected_statement,
+                pedagogical_evidence=pedagogical_evidence,
+                concept_name=concept_name,
+                question_type=question_type,
+                language=language,
+            )
+
+    async def generate_adaptive_block(
+        self,
+        *,
+        evidence_units: list[dict[str, str]],
+        target_dimension: str,
+        difficulty: str,
+        question_types: list[str],
+        served_evidence_uids: list[str],
+        item_count: int,
+        concept_name: str,
+        language: str,
+    ) -> GeneratedAdaptiveBlock:
+        dimension_focus = {
+            "recognition": "recognition of definitions and key facts",
+            "recall": "free recall and retrieval of specific information",
+            "explanation": "explanation of concepts in the learner's own words",
+            "application": "application of knowledge to new scenarios",
+        }.get(target_dimension, target_dimension)
+        system_prompt = (
+            f"You are an expert pedagogical item generator. "
+            f"Generate exactly {item_count} assessment items for the concept '{concept_name}', "
+            f"targeting {dimension_focus} at {difficulty} difficulty level. "
+            "Return only JSON with key 'items' — a list of objects, each containing: "
+            "prompt (the full question text), "
+            "choices (list of strings for MCQ, empty list for open/cloze/true_false), "
+            "expected (list of expected correct answer strings), "
+            "correct_choice_indexes (0-based integer indexes of correct choices; empty for non-MCQ), "
+            "boolean_answer (true or false for true_false items, null otherwise), "
+            "evidence_unit_id (the 'uid' of the evidence unit you used), "
+            "rationale (one sentence explaining why this is correct per the evidence). "
+            "Rules: "
+            "Use ONLY the provided evidence units — do not invent facts. "
+            "Do NOT reuse evidence units listed in served_evidence_uids (already shown to the learner). "
+            "Vary question language and angle across items — do not repeat the same phrasing. "
+            "For MCQ: generate 3-4 choices; distractors must be plausible but clearly incorrect, "
+            "same language/length as the correct option, not copies of other evidence, not absurd. "
+            "The correct answer must be grounded directly in the evidence. "
+            "For open/cloze: expected answers must be derivable from the evidence. "
+            "Write in the same language as the evidence and concept."
+        )
+        user_prompt = {
+            "language": language,
+            "concept_name": concept_name,
+            "target_dimension": target_dimension,
+            "difficulty": difficulty,
+            "question_types": question_types,
+            "item_count": item_count,
+            "evidence_units": evidence_units,
+            "served_evidence_uids": served_evidence_uids,
+        }
+        t0 = time.monotonic()
+        try:
+            content = await self._generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.7,
+            )
+            result = GeneratedAdaptiveBlock.model_validate(content)
+            logger.debug(
+                "llm generate_block done",
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "items_count": len(result.items)},
+            )
+            return result
+        except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            logger.error(
+                "llm generate_block failed, using stub fallback",
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message},
+            )
+            return await self.fallback_provider.generate_adaptive_block(
+                evidence_units=evidence_units,
+                target_dimension=target_dimension,
+                difficulty=difficulty,
+                question_types=question_types,
+                served_evidence_uids=served_evidence_uids,
+                item_count=item_count,
+                concept_name=concept_name,
+                language=language,
+            )
 
     @abstractmethod
     async def _generate_json(

@@ -308,12 +308,12 @@ def test_adaptive_service_scores_multi_cloze_and_open(settings, store):
         correct_choice_indexes=[0, 1],
         rationale="",
     )
-    multi_result = service._evaluate_item(
+    multi_result = asyncio.run(service._evaluate_item(
         item=multi_item,
         answer_key=multi_key,
         submission=AdaptiveItemSubmission(item_id="item_multi", selected_choices=[0, 2]),
         interaction=AdaptiveInteractionEvent(item_id="item_multi"),
-    )
+    ))
     assert multi_result.verdict == "partial_low"
 
     cloze_item = AdaptiveBlockItem(
@@ -333,12 +333,12 @@ def test_adaptive_service_scores_multi_cloze_and_open(settings, store):
         expected=["experiencias personales con contexto temporal"],
         rationale="",
     )
-    cloze_result = service._evaluate_item(
+    cloze_result = asyncio.run(service._evaluate_item(
         item=cloze_item,
         answer_key=cloze_key,
         submission=AdaptiveItemSubmission(item_id="item_cloze", response_text="experiencias personales con contexto"),
         interaction=AdaptiveInteractionEvent(item_id="item_cloze", hint_used=True),
-    )
+    ))
     assert cloze_result.verdict in {"partial_high", "partial_low"}
     assert cloze_result.score_0_to_1 < 1.0
 
@@ -359,12 +359,12 @@ def test_adaptive_service_scores_multi_cloze_and_open(settings, store):
         expected=["La memoria episódica recupera experiencias personales con contexto temporal."],
         rationale="",
     )
-    open_result = service._evaluate_item(
+    open_result = asyncio.run(service._evaluate_item(
         item=open_item,
         answer_key=open_key,
         submission=AdaptiveItemSubmission(item_id="item_open", response_text="Recupera experiencias personales con contexto temporal."),
         interaction=AdaptiveInteractionEvent(item_id="item_open", retry_used=True),
-    )
+    ))
     assert open_result.verdict in {"partial_high", "correct"}
     assert open_result.score_0_to_1 < 1.0
 

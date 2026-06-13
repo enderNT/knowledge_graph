@@ -1703,13 +1703,15 @@ class ArcadeKnowledgeStore:
             (
                 "SELECT session_id, user_id, study_mode, status, resolved_reference_json, domain_hint, language, "
                 "constraints_json, tutor_context_json, current_block_json, block_history_json, summary_json, "
-                "opened_at, updated_at FROM AdaptiveSession WHERE session_id = :session_id LIMIT 1"
+                "served_evidence_json, opened_at, updated_at FROM AdaptiveSession WHERE session_id = :session_id LIMIT 1"
             ),
             {"session_id": session_id},
         )
         if not rows:
             return None
         row = rows[0]
+        raw_served = row.get("served_evidence_json")
+        served_evidence_uids: list[str] = json.loads(raw_served) if raw_served else []
         return AdaptiveSessionSnapshot(
             session_id=row["session_id"],
             user_id=row["user_id"],
@@ -1729,6 +1731,7 @@ class ArcadeKnowledgeStore:
             ),
             block_history=self._parse_model_list(row.get("block_history_json"), AdaptiveBlockResult),
             summary=self._parse_model(row.get("summary_json"), AdaptiveSessionSummary),
+            served_evidence_uids=served_evidence_uids,
             status=row.get("status") or "active",
             opened_at=row.get("opened_at") or utcnow_iso(),
             updated_at=row.get("updated_at") or utcnow_iso(),
@@ -1748,6 +1751,7 @@ class ArcadeKnowledgeStore:
             "current_block_json": session.current_block.model_dump_json() if session.current_block else None,
             "block_history_json": json.dumps([item.model_dump() for item in session.block_history]),
             "summary_json": session.summary.model_dump_json(),
+            "served_evidence_json": json.dumps(session.served_evidence_uids),
             "opened_at": session.opened_at,
             "updated_at": session.updated_at,
         }
@@ -1763,6 +1767,7 @@ class ArcadeKnowledgeStore:
                     "language = :language, constraints_json = :constraints_json, "
                     "tutor_context_json = :tutor_context_json, current_block_json = :current_block_json, "
                     "block_history_json = :block_history_json, summary_json = :summary_json, "
+                    "served_evidence_json = :served_evidence_json, "
                     "opened_at = :opened_at, updated_at = :updated_at "
                     "WHERE session_id = :session_id"
                 ),
@@ -1776,6 +1781,7 @@ class ArcadeKnowledgeStore:
                 "language = :language, constraints_json = :constraints_json, "
                 "tutor_context_json = :tutor_context_json, current_block_json = :current_block_json, "
                 "block_history_json = :block_history_json, summary_json = :summary_json, "
+                "served_evidence_json = :served_evidence_json, "
                 "opened_at = :opened_at, updated_at = :updated_at"
             ),
             payload,

@@ -479,6 +479,40 @@ class PedagogicalAssessmentService:
                 missing.append(point)
         return matched, missing
 
+    def validate_choice_set(
+        self,
+        choices: list[str],
+        correct_indexes: list[int],
+        correct_statement: str,
+        evidence_context: list[str],
+    ) -> tuple[bool, list[str]]:
+        if len(choices) < 2:
+            return False, ["too_few_choices"]
+        warnings: list[str] = []
+        seen_norms: set[str] = set()
+        for choice in choices:
+            norm = normalize_text(choice)
+            if norm in seen_norms:
+                return False, ["duplicate_choice"]
+            seen_norms.add(norm)
+            if len(choice.strip()) < 8:
+                warnings.append("choice_too_short")
+        correct_norm = normalize_text(correct_statement)
+        correct_tokens = {t for t in correct_norm.split() if t}
+        for i, choice in enumerate(choices):
+            if i in correct_indexes:
+                continue
+            choice_norm = normalize_text(choice)
+            choice_tokens = {t for t in choice_norm.split() if t}
+            if correct_tokens:
+                overlap = len(choice_tokens & correct_tokens) / len(correct_tokens)
+                if overlap >= 0.8:
+                    return False, ["distractor_too_similar_to_correct"]
+            for ev in evidence_context:
+                if choice_norm == normalize_text(ev):
+                    return False, ["distractor_copies_evidence"]
+        return not bool(warnings), warnings
+
     def _plausible_distractors(self, unit: EvidenceUnit, evidence: list[EvidenceUnit]) -> list[str]:
         distractors: list[str] = []
         for other in evidence:
