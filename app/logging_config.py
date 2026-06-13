@@ -34,7 +34,12 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = val
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        json_line = json.dumps(payload, ensure_ascii=False, default=str)
+        if record.levelno >= logging.ERROR:
+            return f"\n--- ERROR ---\n{json_line}\n"
+        if record.levelno >= logging.WARNING:
+            return f"\n--- WARNING ---\n{json_line}\n"
+        return json_line + "\n"
 
     @staticmethod
     def _utc_ts(created: float) -> str:

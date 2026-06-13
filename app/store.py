@@ -1958,24 +1958,23 @@ class ArcadeKnowledgeStore:
     async def _fetch_neighborhood_edge_rows(self, concept_uid: str) -> list[dict[str, Any]]:
         outgoing = await self._safe_query(
             (
-                "MATCH {type: Concept, as: c, where: (uid = :uid)}"
-                ".outE(){as: e}.inV(){as: n} "
-                "RETURN c.uid as from_uid, c.canonical_name as from_name, "
-                "n.uid as to_uid, coalesce(n.canonical_name, n.text, n.name, n.value, n.uid) as to_name, "
-                "n.canonical_name as to_concept_name, n.text as to_text, coalesce(n.domain, '') as to_domain, "
-                "coalesce(n.description, '') as to_description, type(e) as relation, "
-                "e.confidence as confidence, e.evidence_episode_id as evidence_episode_id"
+                "SELECT out.uid as from_uid, out.canonical_name as from_name, "
+                "in.uid as to_uid, coalesce(in.canonical_name, in.text, in.name, in.value, in.uid) as to_name, "
+                "in.canonical_name as to_concept_name, in.text as to_text, "
+                "coalesce(in.domain, '') as to_domain, coalesce(in.description, '') as to_description, "
+                "@class as relation, confidence, evidence_episode_id "
+                "FROM E WHERE out IN (SELECT @rid FROM Concept WHERE uid = :uid)"
             ),
             {"uid": concept_uid},
         )
         incoming = await self._safe_query(
             (
-                "MATCH {type: Concept, as: c, where: (uid = :uid)}"
-                ".inE(){as: e}.outV(){as: n} "
-                "RETURN n.uid as from_uid, coalesce(n.canonical_name, n.text, n.name, n.value, n.uid) as from_name, "
-                "n.canonical_name as from_concept_name, n.text as from_text, coalesce(n.domain, '') as from_domain, "
-                "coalesce(n.description, '') as from_description, c.uid as to_uid, c.canonical_name as to_name, "
-                "type(e) as relation, e.confidence as confidence, e.evidence_episode_id as evidence_episode_id"
+                "SELECT in.uid as to_uid, in.canonical_name as to_name, "
+                "out.uid as from_uid, coalesce(out.canonical_name, out.text, out.name, out.value, out.uid) as from_name, "
+                "out.canonical_name as from_concept_name, out.text as from_text, "
+                "coalesce(out.domain, '') as from_domain, coalesce(out.description, '') as from_description, "
+                "@class as relation, confidence, evidence_episode_id "
+                "FROM E WHERE in IN (SELECT @rid FROM Concept WHERE uid = :uid)"
             ),
             {"uid": concept_uid},
         )
@@ -2062,10 +2061,10 @@ class ArcadeKnowledgeStore:
 
         relation_rows = await self._safe_query(
             (
-                "MATCH {type: Concept, as: source}.outE(){as: e, where: (evidence_episode_id = :episode_id)}"
-                ".inV(){type: Concept, as: target} "
-                "RETURN source.uid as from_uid, source.canonical_name as from_name, target.uid as to_uid, "
-                "target.canonical_name as to_name, type(e) as relation, e.evidence_episode_id as evidence_episode_id"
+                "SELECT out.uid as from_uid, out.canonical_name as from_name, "
+                "in.uid as to_uid, in.canonical_name as to_name, "
+                "@class as relation, evidence_episode_id "
+                "FROM E WHERE evidence_episode_id = :episode_id"
             ),
             {"episode_id": episode.uid},
         )
@@ -2167,9 +2166,9 @@ class ArcadeKnowledgeStore:
 
         match_rows = await self._safe_query(
             (
-                f"MATCH {{type: Concept, as: source, where: (uid = :from_uid)}}"
-                f".outE('{relation}'){{as: e}}.inV(){{type: Concept, as: target, where: (uid = :to_uid)}} "
-                "RETURN e.evidence_episode_id as evidence_episode_id"
+                f"SELECT evidence_episode_id FROM `{relation}` "
+                "WHERE out IN (SELECT @rid FROM Concept WHERE uid = :from_uid) "
+                "AND in IN (SELECT @rid FROM Concept WHERE uid = :to_uid)"
             ),
             {"from_uid": from_concept.uid, "to_uid": to_concept.uid},
         )

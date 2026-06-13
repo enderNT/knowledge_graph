@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -68,16 +68,21 @@ var (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	cfg := loadConfig()
 
 	if cfg.active {
 		switch {
 		case cfg.apiKey == "":
-			log.Fatal("ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic")
+			slog.Error("missing required env var", "var", "ANTHROPIC_API_KEY")
+			os.Exit(1)
 		case cfg.bearerToken == "":
-			log.Fatal("ANTHROPIC_GATEWAY_BEARER_TOKEN is required when AI_PROVIDER=anthropic")
+			slog.Error("missing required env var", "var", "ANTHROPIC_GATEWAY_BEARER_TOKEN")
+			os.Exit(1)
 		case cfg.defaultModel == "":
-			log.Fatal("ANTHROPIC_CHAT_MODEL is required when AI_PROVIDER=anthropic")
+			slog.Error("missing required env var", "var", "ANTHROPIC_CHAT_MODEL")
+			os.Exit(1)
 		}
 	}
 
@@ -103,9 +108,10 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("anthropic gateway listening on :%s active=%t", cfg.port, cfg.active)
+	slog.Info("anthropic gateway listening", "port", cfg.port, "active", cfg.active)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		slog.Error("server error", "err", err)
+		os.Exit(1)
 	}
 }
 
@@ -212,6 +218,19 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 		model = c.defaultModel
 	}
 
+	effortValue := ""
+	if req.OutputConfig != nil {
+		effortValue = strings.TrimSpace(req.OutputConfig.Effort)
+	}
+	t0 := time.Now()
+	slog.InfoContext(ctx, "llm request",
+		"model", model,
+		"system_chars", len(req.SystemPrompt),
+		"payload_bytes", len(req.UserPayloadJSON),
+		"thinking", req.Thinking != nil,
+		"effort", effortValue,
+	)
+
 	body := map[string]any{
 		"model":      model,
 		"max_tokens": 8192,
@@ -276,7 +295,7 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 	if resp.StatusCode >= 400 {
 		var errBody bytes.Buffer
 		_, _ = errBody.ReadFrom(resp.Body)
-		log.Printf("anthropic upstream error: status=%d body=%s", resp.StatusCode, errBody.String())
+		slog.ErrorContext(ctx, "anthropic upstream error", "status", resp.StatusCode, "body", errBody.String())
 		return nil, errUpstreamGeneric
 	}
 
@@ -285,6 +304,10 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, errUpstreamGeneric
@@ -311,6 +334,12 @@ func (c *httpAnthropicClient) GenerateJSON(ctx context.Context, req generateJSON
 	if err := json.Unmarshal([]byte(joined[start:end+1]), &content); err != nil {
 		return nil, errUpstreamJSON
 	}
+	slog.InfoContext(ctx, "llm response",
+		"model", model,
+		"latency_ms", time.Since(t0).Milliseconds(),
+		"input_tokens", payload.Usage.InputTokens,
+		"output_tokens", payload.Usage.OutputTokens,
+	)
 	return content, nil
 }
 
