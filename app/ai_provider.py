@@ -10,75 +10,20 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.schemas import ExtractionResult, GeneratedAdaptiveBlock, LearnerResponseGradingDecision, PedagogicalEvidenceDecision
+from app.schemas import (
+    ExtractionResult,
+    ExtractionVettingResult,
+    ExtractedConcept,
+    ExtractedClaim,
+    ExtractedRelation,
+    ExtractionItemDecision,
+    GeneratedAdaptiveBlock,
+    LearnerResponseGradingDecision,
+    PedagogicalEvidenceDecision,
+)
 from app.utils import dedupe_preserve_order, fit_embedding_dimensions, normalize_text, stable_embedding
 
 logger = logging.getLogger(__name__)
-
-
-_CONNECTOR_TOKENS = {"a", "al", "de", "del", "e", "la", "las", "los", "y"}
-_QUALIFIER_TOKENS = {"medio", "temprano", "tardio", "tardío", "clasico", "clásico", "operante"}
-_GENERIC_CONCEPT_TOKENS = {
-    "aprox",
-    "aproximado",
-    "aproximados",
-    "centros",
-    "cultura",
-    "fechas",
-    "general",
-    "habito",
-    "historia",
-    "importantes",
-    "madre",
-    "periodo",
-    "periodos",
-    "principalmente",
-    "teoria",
-    "teoría",
-    "todo",
-    "zonas",
-}
-_GENERIC_HEADINGS = {
-    "centros importantes",
-    "fechas aprox",
-    "periodo",
-    "periodos aproximados",
-    "zonas que habito",
-}
-_CLAIM_VERB_MARKERS = {
-    "contrasta",
-    "desarrolla",
-    "desarrollaron",
-    "desarrollo",
-    "desarrolló",
-    "es",
-    "explica",
-    "explican",
-    "fue",
-    "fueron",
-    "ocurre",
-    "ocurrio",
-    "ocurrió",
-    "se",
-    "son",
-    "surge",
-    "surgio",
-    "surgió",
-    "tiene",
-    "tienen",
-    "permite",
-    "permiten",
-}
-_CONCEPT_HEAD_PATTERNS = (
-    re.compile(
-        r"\b(cultura|condicionamiento|aprendizaje|teor[ií]a|modelo|sistema|imperio|civilizaci[oó]n)\s+([a-záéíóúñ]+)\b",
-        flags=re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(precl[aá]sico|cl[aá]sico|poscl[aá]sico)\s+(temprano|medio|tard[ií]o)\b",
-        flags=re.IGNORECASE,
-    ),
-)
 
 
 class AIProvider(ABC):
@@ -88,6 +33,16 @@ class AIProvider(ABC):
 
     @abstractmethod
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def vet_extraction(
+        self,
+        *,
+        extraction: ExtractionResult,
+        text: str,
+        language: str,
+    ) -> ExtractionVettingResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -150,37 +105,19 @@ class StubAIProvider(AIProvider):
         return stable_embedding(text, self.settings.embedding_dimensions)
 
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
-        domain = tags[0].strip().title() if tags else "General"
-        concepts = self._extract_concepts(text, tags)
-        claims = self._extract_claims(text, concepts)
-        relation_candidates = self._extract_relations(text, concepts)
-        payload = {
-            "domain": domain,
-            "topics": [domain],
-            "concepts": [
-                {
-                    "canonical_name": name,
-                    "aliases": [],
-                    "description": f"Concept extracted from fragment about {domain}.",
-                    "confidence": 0.8,
-                }
-                for name in concepts
-            ],
-            "claims": [
-                {
-                    "text": claim,
-                    "confidence": 0.75,
-                    "explains": self._match_concepts_in_text(claim, concepts)[:3],
-                }
-                for claim in claims[:3]
-            ],
-            "relations": relation_candidates,
-        }
-        return self.refine_extraction(
-            ExtractionResult.model_validate(payload),
-            text,
-            tags,
-            augment_from_heuristics=True,
+        raise NotImplementedError(
+            "extraction requires a real LLM provider; set AI_PROVIDER=anthropic or AI_PROVIDER=openai_compatible"
+        )
+
+    async def vet_extraction(
+        self,
+        *,
+        extraction: ExtractionResult,
+        text: str,
+        language: str,
+    ) -> ExtractionVettingResult:
+        raise NotImplementedError(
+            "vet_extraction requires a real LLM provider; set AI_PROVIDER=anthropic or AI_PROVIDER=openai_compatible"
         )
 
     async def vet_pedagogical_evidence(
@@ -255,401 +192,19 @@ class StubAIProvider(AIProvider):
     ) -> GeneratedAdaptiveBlock:
         return GeneratedAdaptiveBlock(items=[])
 
-    def refine_extraction(
-        self,
-        result: ExtractionResult,
-        text: str,
-        tags: list[str],
-        *,
-        augment_from_heuristics: bool,
-    ) -> ExtractionResult:
-        domain = tags[0].strip().title() if tags else (result.domain.strip() or "General")
-        heuristic_concepts = self._extract_concepts(text, tags)
-        concept_candidates: list[dict[str, Any]] = [
-            {
-                "canonical_name": concept.canonical_name,
-                "aliases": list(concept.aliases),
-                "description": concept.description,
-                "confidence": concept.confidence,
-            }
-            for concept in result.concepts
-        ]
-        if augment_from_heuristics or len(concept_candidates) < 2:
-            concept_candidates.extend(
-                {
-                    "canonical_name": name,
-                    "aliases": [],
-                    "description": f"Concept extracted from fragment about {domain}.",
-                    "confidence": 0.72,
-                }
-                for name in heuristic_concepts
-            )
+    # Language-agnostic helpers used by StructuredLLMProvider via fallback_provider
 
-        refined_concepts = self._refine_concepts(concept_candidates, text, domain)
-        concept_names = [item["canonical_name"] for item in refined_concepts]
-
-        refined_claims = self._refine_claims(result, text, concept_names)
-        if not refined_claims:
-            refined_claims = [
-                {
-                    "text": claim,
-                    "confidence": 0.75,
-                    "explains": self._match_concepts_in_text(claim, concept_names)[:3],
-                }
-                for claim in self._extract_claims(text, concept_names)[:3]
-            ]
-
-        refined_relations = self._refine_relations(
-            result=result,
-            text=text,
-            concept_names=concept_names,
-            augment_from_heuristics=augment_from_heuristics,
-        )
-
-        topics = [
-            self._titleize_phrase(topic)
-            for topic in dedupe_preserve_order([domain, *result.topics])
-            if topic.strip()
-        ]
-        return ExtractionResult.model_validate(
-            {
-                "domain": domain,
-                "topics": topics or [domain],
-                "concepts": refined_concepts,
-                "claims": refined_claims[:3],
-                "relations": refined_relations,
-            }
-        )
-
-    def _extract_concepts(self, text: str, tags: list[str]) -> list[str]:
-        concepts: list[str] = []
-        concepts.extend(self._extract_table_concepts(text))
-        concepts.extend(self._extract_section_concepts(text))
-        concepts.extend(self._extract_pattern_concepts(text))
-        concepts.extend(self._extract_capitalized_concepts(text))
-        return dedupe_preserve_order([item for item in concepts if self._is_valid_concept(item)])
-
-    def _extract_claims(self, text: str, concepts: list[str]) -> list[str]:
-        claims: list[str] = []
-        for paragraph in re.split(r"\n\s*\n", text):
-            lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
-            if not lines:
-                continue
-            cleaned_lines = [
-                line
-                for line in lines
-                if not line.endswith(":") and "\t" not in line and normalize_text(line) not in _GENERIC_HEADINGS
-            ]
-            if not cleaned_lines:
-                continue
-            joined = " ".join(cleaned_lines)
-            joined = joined.replace("aprox.", "aprox").replace("a. C.", "a C").replace("d. C.", "d C")
-            for sentence in re.split(r"(?<=[.!?])\s+", joined):
-                candidate = sentence.strip()
-                if self._looks_like_claim(candidate):
-                    claims.append(candidate)
-
-        if claims:
-            return dedupe_preserve_order(claims)
-        fallback = [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", text) if segment.strip()]
-        return fallback[:3]
-
-    def _extract_relations(self, text: str, concepts: list[str]) -> list[dict[str, str | float]]:
-        relations: list[dict[str, str | float]] = []
-        seen: set[tuple[str, str, str]] = set()
-
-        for claim in self._extract_claims(text, concepts):
-            mentioned = self._match_concepts_in_text(claim, concepts)
-            if len(mentioned) < 2:
-                continue
-            relation = self._infer_relation_type(claim)
-            if not relation:
-                continue
-            left, right = mentioned[0], mentioned[1]
-            if left == right:
-                continue
-            key = (left, relation, right)
-            if key in seen:
-                continue
-            seen.add(key)
-            relations.append(
-                {
-                    "from_name": left,
-                    "relation": relation,
-                    "to_name": right,
-                    "confidence": 0.72,
-                }
-            )
-
-        primary_concept = self._infer_primary_concept(concepts)
-        if primary_concept:
-            current_section: str | None = None
-            for raw_line in text.splitlines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if line.endswith(":"):
-                    current_section = normalize_text(line[:-1])
-                    continue
-                if current_section:
-                    relation = None
-                    direction = "from_primary"
-                    if "centro" in current_section:
-                        relation = "PART_OF"
-                        direction = "to_primary"
-                    elif any(keyword in current_section for keyword in ("zona", "region", "ubic")):
-                        relation = "RELATED_TO"
-                    if relation:
-                        for item in self._extract_list_items(line):
-                            matched = self._find_matching_concept(item, concepts)
-                            if not matched or matched == primary_concept:
-                                continue
-                            left, right = (
-                                (matched, primary_concept)
-                                if direction == "to_primary"
-                                else (primary_concept, matched)
-                            )
-                            key = (left, relation, right)
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            relations.append(
-                                {
-                                    "from_name": left,
-                                    "relation": relation,
-                                    "to_name": right,
-                                    "confidence": 0.68,
-                                }
-                            )
-                    current_section = None
-        return relations
-
-    def _refine_concepts(self, candidates: list[dict[str, Any]], text: str, domain: str) -> list[dict[str, Any]]:
-        concepts_by_name: dict[str, dict[str, Any]] = {}
-        for candidate in candidates:
-            raw_name = candidate.get("canonical_name", "")
-            cleaned_name = self._clean_concept_name(raw_name)
-            if not self._is_valid_concept(cleaned_name):
-                continue
-            key = normalize_text(cleaned_name)
-            aliases = [
-                self._titleize_phrase(alias)
-                for alias in candidate.get("aliases", [])
-                if self._is_valid_concept(alias)
-            ]
-            description = candidate.get("description") or f"Concept extracted from fragment about {domain}."
-            confidence = float(candidate.get("confidence", 0.75))
-            if key in concepts_by_name:
-                merged_aliases = dedupe_preserve_order([*concepts_by_name[key]["aliases"], *aliases])
-                concepts_by_name[key]["aliases"] = merged_aliases
-                concepts_by_name[key]["confidence"] = max(concepts_by_name[key]["confidence"], confidence)
-                if not concepts_by_name[key]["description"] and description:
-                    concepts_by_name[key]["description"] = description
-                continue
-            concepts_by_name[key] = {
-                "canonical_name": cleaned_name,
-                "aliases": aliases,
-                "description": description,
-                "confidence": confidence,
-            }
-        return list(concepts_by_name.values())[:12]
-
-    def _refine_claims(self, result: ExtractionResult, text: str, concept_names: list[str]) -> list[dict[str, Any]]:
-        refined_claims: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        candidates = list(result.claims)
-        if not candidates:
-            candidates = [
-                {
-                    "text": sentence,
-                    "confidence": 0.75,
-                    "explains": self._match_concepts_in_text(sentence, concept_names)[:3],
-                }
-                for sentence in self._extract_claims(text, concept_names)
-            ]
-
-        for candidate in candidates:
-            text_value = candidate.text if hasattr(candidate, "text") else candidate.get("text", "")
-            text_value = text_value.strip()
-            if not self._looks_like_claim(text_value):
-                continue
-            normalized = normalize_text(text_value)
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            explains_source = candidate.explains if hasattr(candidate, "explains") else candidate.get("explains", [])
-            explains = [
-                matched
-                for raw in explains_source
-                if (matched := self._find_matching_concept(raw, concept_names))
-            ]
-            if not explains:
-                explains = self._match_concepts_in_text(text_value, concept_names)[:3]
-            confidence = float(candidate.confidence if hasattr(candidate, "confidence") else candidate.get("confidence", 0.75))
-            refined_claims.append(
-                {
-                    "text": text_value,
-                    "confidence": confidence,
-                    "explains": dedupe_preserve_order(explains),
-                }
-            )
-        return refined_claims
-
-    def _refine_relations(
-        self,
-        *,
-        result: ExtractionResult,
-        text: str,
-        concept_names: list[str],
-        augment_from_heuristics: bool,
-    ) -> list[dict[str, Any]]:
-        refined_relations: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
-        for relation in result.relations:
-            from_name = self._find_matching_concept(relation.from_name, concept_names)
-            to_name = self._find_matching_concept(relation.to_name, concept_names)
-            if not from_name or not to_name or from_name == to_name:
-                continue
-            key = (from_name, relation.relation, to_name)
-            if key in seen:
-                continue
-            seen.add(key)
-            refined_relations.append(
-                {
-                    "from_name": from_name,
-                    "relation": relation.relation,
-                    "to_name": to_name,
-                    "confidence": relation.confidence,
-                }
-            )
-        if augment_from_heuristics or not refined_relations:
-            for relation in self._extract_relations(text, concept_names):
-                key = (relation["from_name"], relation["relation"], relation["to_name"])
-                if relation["from_name"] == relation["to_name"] or key in seen:
-                    continue
-                seen.add(key)
-                refined_relations.append(relation)
-        return refined_relations
-
-    def _extract_table_concepts(self, text: str) -> list[str]:
-        concepts: list[str] = []
-        for raw_line in text.splitlines():
-            if "\t" not in raw_line:
-                continue
-            cells = [cell.strip() for cell in re.split(r"\t+", raw_line) if cell.strip()]
-            if not cells:
-                continue
-            label = self._clean_concept_name(cells[0])
-            if self._is_valid_concept(label):
-                concepts.append(label)
-        return concepts
-
-    def _extract_section_concepts(self, text: str) -> list[str]:
-        concepts: list[str] = []
-        current_section: str | None = None
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.endswith(":"):
-                current_section = normalize_text(line[:-1])
-                continue
-            if current_section:
-                concepts.extend(self._extract_list_items(line))
-                current_section = None
-        return concepts
-
-    def _extract_pattern_concepts(self, text: str) -> list[str]:
-        concepts: list[str] = []
-        lowered = text.lower()
-        for pattern in _CONCEPT_HEAD_PATTERNS:
-            for match in pattern.finditer(lowered):
-                concepts.append(self._clean_concept_name(match.group(0)))
-        return concepts
-
-    def _extract_capitalized_concepts(self, text: str) -> list[str]:
-        concepts: list[str] = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or "\t" in line or line.endswith(":"):
-                continue
-            for chunk in re.split(r"(?<=[.!?])\s+", line):
-                chunk = chunk.strip()
-                if not chunk:
-                    continue
-                if "," in chunk or re.search(r"\s[ye]\s", chunk):
-                    concepts.extend(self._extract_list_items(chunk))
-                    continue
-                concepts.extend(self._extract_capitalized_concepts_from_chunk(chunk))
-        return concepts
-
-    def _extract_capitalized_concepts_from_chunk(self, text: str) -> list[str]:
-        tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+", text)
-        concepts: list[str] = []
-        index = 0
-        while index < len(tokens):
-            token = tokens[index]
-            if not self._looks_like_proper_token(token):
-                index += 1
-                continue
-
-            phrase = [token]
-            cursor = index + 1
-            while cursor < len(tokens):
-                if len([item for item in phrase if normalize_text(item) not in _CONNECTOR_TOKENS]) >= 3:
-                    break
-                current = tokens[cursor]
-                current_normalized = normalize_text(current)
-                if (
-                    current_normalized in _CONNECTOR_TOKENS
-                    and cursor + 1 < len(tokens)
-                    and self._looks_like_proper_token(tokens[cursor + 1])
-                ):
-                    phrase.extend([current.lower(), tokens[cursor + 1]])
-                    cursor += 2
-                    continue
-                if current_normalized in _QUALIFIER_TOKENS:
-                    phrase.append(current.lower())
-                    cursor += 1
-                    continue
-                if self._looks_like_proper_token(current):
-                    phrase.append(current)
-                    cursor += 1
-                    continue
-                break
-            concepts.append(self._clean_concept_name(" ".join(phrase)))
-            index = cursor
-        return concepts
-
-    def _extract_list_items(self, line: str) -> list[str]:
-        items: list[str] = []
-        raw_parts = [part.strip(" .;") for part in re.split(r",|\sy\s|\se\s", line) if part.strip(" .;")]
-        if len(raw_parts) > 1:
-            for part in raw_parts:
-                items.extend(self._extract_capitalized_concepts_from_chunk(part) or [self._clean_concept_name(part)])
-            return items
-        return self._extract_capitalized_concepts_from_chunk(line)
-
-    def _infer_relation_type(self, sentence: str) -> str | None:
-        normalized = normalize_text(sentence)
-        if "contrasta con" in normalized or " versus " in normalized or " vs " in normalized:
-            return "CONTRASTS_WITH"
-        if "prerrequisito" in normalized:
-            return "PREREQUISITE_FOR"
-        if "explica" in normalized:
-            return "EXPLAINS"
-        if "es parte de" in normalized or "forma parte de" in normalized:
-            return "PART_OF"
-        if "se desarrollo" in normalized or "durante" in normalized:
-            return "RELATED_TO"
-        return None
-
-    def _infer_primary_concept(self, concepts: list[str]) -> str | None:
+    def _find_matching_concept(self, raw_value: str, concepts: list[str]) -> str | None:
+        target = normalize_text(raw_value)
         for concept in concepts:
-            normalized = normalize_text(concept)
-            if normalized.startswith(("cultura ", "condicionamiento ", "aprendizaje ", "teoria ", "teoria ", "imperio ")):
+            if normalize_text(concept) == target:
                 return concept
-        return concepts[0] if concepts else None
+        # Tolerant substring match
+        for concept in concepts:
+            cn = normalize_text(concept)
+            if target and cn and (target in cn or cn in target):
+                return concept
+        return None
 
     def _match_concepts_in_text(self, fragment: str, concepts: list[str]) -> list[str]:
         normalized_fragment = normalize_text(fragment)
@@ -661,76 +216,6 @@ class StubAIProvider(AIProvider):
                 matches.append((position, concept))
         matches.sort(key=lambda item: item[0])
         return dedupe_preserve_order([concept for _, concept in matches])
-
-    def _find_matching_concept(self, raw_value: str, concepts: list[str]) -> str | None:
-        target = normalize_text(raw_value)
-        for concept in concepts:
-            if normalize_text(concept) == target:
-                return concept
-        return None
-
-    def _looks_like_claim(self, sentence: str) -> bool:
-        normalized = normalize_text(sentence)
-        if len(normalized.split()) < 4:
-            return False
-        if normalized in _GENERIC_HEADINGS or "\t" in sentence:
-            return False
-        return any(marker in normalized.split() for marker in _CLAIM_VERB_MARKERS) or sentence.endswith((".", "!", "?"))
-
-    def _looks_like_proper_token(self, token: str) -> bool:
-        return bool(token) and token[0].isupper()
-
-    def _is_valid_concept(self, raw_value: str) -> bool:
-        value = self._clean_concept_name(raw_value)
-        normalized = normalize_text(value)
-        if not normalized or len(normalized) < 3:
-            return False
-        if normalized in _GENERIC_HEADINGS:
-            return False
-        if any(char.isdigit() for char in value):
-            return False
-        meaningful_tokens = [token for token in normalized.split() if token not in _CONNECTOR_TOKENS]
-        if not meaningful_tokens:
-            return False
-        if any(len(token) == 1 for token in meaningful_tokens):
-            return False
-        if all(token in _GENERIC_CONCEPT_TOKENS for token in meaningful_tokens):
-            return False
-        if meaningful_tokens[0] in {"aprox", "principalmente", "todo"}:
-            return False
-        if (
-            len(meaningful_tokens) >= 2
-            and meaningful_tokens[0] in {"aprendizaje", "condicionamiento", "cultura", "modelo", "sistema", "teoria"}
-            and meaningful_tokens[1] in _GENERIC_CONCEPT_TOKENS
-        ):
-            return False
-        return True
-
-    def _clean_concept_name(self, value: str) -> str:
-        cleaned = re.sub(r"\s+", " ", value.replace("\t", " ")).strip(" .,:;")
-        cleaned = self._trim_predicate_suffix(cleaned)
-        return self._titleize_phrase(cleaned)
-
-    def _titleize_phrase(self, value: str) -> str:
-        words = [word for word in re.split(r"\s+", value.strip()) if word]
-        titled: list[str] = []
-        for index, word in enumerate(words):
-            normalized = normalize_text(word)
-            if index > 0 and normalized in _CONNECTOR_TOKENS:
-                titled.append(word.lower())
-            else:
-                titled.append(word.capitalize() if word.islower() else word)
-        return " ".join(titled)
-
-    def _trim_predicate_suffix(self, value: str) -> str:
-        words = [word for word in re.split(r"\s+", value.strip()) if word]
-        trimmed: list[str] = []
-        for index, word in enumerate(words):
-            normalized = normalize_text(word)
-            if index > 0 and normalized in _CLAIM_VERB_MARKERS:
-                break
-            trimmed.append(word)
-        return " ".join(trimmed).strip()
 
 
 class StubEmbeddingProvider(EmbeddingProvider):
@@ -838,6 +323,172 @@ class StructuredLLMProvider(AIProvider):
             message = str(exc).strip() or exc.__class__.__name__
             logger.error("llm extract failed", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message})
             raise ValueError(f"llm extraction failed: {message}") from exc
+
+    async def vet_extraction(
+        self,
+        *,
+        extraction: ExtractionResult,
+        text: str,
+        language: str,
+    ) -> ExtractionVettingResult:
+        system_prompt = (
+            "You are the extraction quality judge for a knowledge graph ingestion pipeline. "
+            "You receive a raw extraction (concepts, claims, relations) and the source text it came from. "
+            "Return only JSON with keys: concept_decisions, claim_decisions, relation_decisions. "
+            "Each list contains objects with: name (identifier), status ('keep', 'drop', or 'repair'), "
+            "review_notes (list of short reason strings), repaired_text (string or null — only for 'repair'). "
+            "For concepts: 'name' is the canonical_name. "
+            "  keep: the concept is teachable, specific, and useful as a standalone graph node. "
+            "  drop: the concept is too generic, meta, navigational, a heading, a date label, a non-teachable token, or not explicitly present in the text as an idea. "
+            "  repair: the concept is valid but the canonical_name needs improvement; provide repaired_text with the better name. "
+            "For claims: 'name' is the first 80 chars of the claim text. "
+            "  keep: the claim is a teachable declarative statement grounded in the text. "
+            "  drop: the claim is meta-content, navigational, procedural, or not useful to teach. "
+            "  repair: the claim is valid but awkwardly worded; provide repaired_text with the corrected statement. "
+            "For relations: 'name' is 'from_name → relation → to_name'. "
+            "  keep: the relation is explicitly supported by the text. "
+            "  drop: the relation is hallucinated, unsupported, or redundant. "
+            "Use only the text as the ground truth. Do not invent facts. "
+            "Be lenient with concepts that are unambiguously teachable, even if phrased imperfectly."
+        )
+        concept_list = [
+            {"canonical_name": c.canonical_name, "description": c.description, "evidence_quotes": c.evidence_quotes}
+            for c in extraction.concepts
+        ]
+        claim_list = [
+            {"text": c.text, "supporting_quote": c.supporting_quote}
+            for c in extraction.claims
+        ]
+        relation_list = [
+            {"from_name": r.from_name, "relation": r.relation, "to_name": r.to_name}
+            for r in extraction.relations
+        ]
+        user_prompt = {
+            "language": language,
+            "text": text,
+            "extraction": {
+                "concepts": concept_list,
+                "claims": claim_list,
+                "relations": relation_list,
+            },
+        }
+        t0 = time.monotonic()
+        try:
+            content = await self._generate_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.1,
+            )
+            return self._apply_vetting_decisions(extraction, content)
+        except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            logger.error(
+                "llm vet_extraction failed",
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message},
+            )
+            raise ValueError(f"llm extraction vetting failed: {message}") from exc
+        finally:
+            logger.debug(
+                "llm vet_extraction done",
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000)},
+            )
+
+    def _apply_vetting_decisions(
+        self,
+        extraction: ExtractionResult,
+        content: dict[str, Any],
+    ) -> ExtractionVettingResult:
+        all_decisions: list[ExtractionItemDecision] = []
+
+        # Index decisions by name
+        concept_decisions: dict[str, dict[str, Any]] = {
+            d["name"]: d for d in content.get("concept_decisions", []) if isinstance(d, dict) and "name" in d
+        }
+        claim_decisions: dict[str, dict[str, Any]] = {
+            d["name"]: d for d in content.get("claim_decisions", []) if isinstance(d, dict) and "name" in d
+        }
+        relation_decisions: dict[str, dict[str, Any]] = {
+            d["name"]: d for d in content.get("relation_decisions", []) if isinstance(d, dict) and "name" in d
+        }
+
+        kept_concepts: list[ExtractedConcept] = []
+        for concept in extraction.concepts:
+            dec = concept_decisions.get(concept.canonical_name, {})
+            status = dec.get("status", "keep")
+            notes = dec.get("review_notes", [])
+            repaired = dec.get("repaired_text")
+            all_decisions.append(ExtractionItemDecision(
+                item_type="concept",
+                name=concept.canonical_name,
+                status=status,
+                review_notes=notes if isinstance(notes, list) else [notes] if notes else [],
+                repaired_text=repaired,
+            ))
+            if status == "drop":
+                logger.debug("concept dropped by vet", extra={"name": concept.canonical_name, "notes": notes})
+                continue
+            if status == "repair" and repaired:
+                concept = concept.model_copy(update={"canonical_name": repaired.strip()})
+            kept_concepts.append(concept)
+
+        kept_concept_names = [c.canonical_name for c in kept_concepts]
+
+        kept_claims: list[ExtractedClaim] = []
+        for claim in extraction.claims:
+            dec_key = claim.text[:80]
+            dec = claim_decisions.get(dec_key, {})
+            status = dec.get("status", "keep")
+            notes = dec.get("review_notes", [])
+            repaired = dec.get("repaired_text")
+            all_decisions.append(ExtractionItemDecision(
+                item_type="claim",
+                name=dec_key,
+                status=status,
+                review_notes=notes if isinstance(notes, list) else [notes] if notes else [],
+                repaired_text=repaired,
+            ))
+            if status == "drop":
+                logger.debug("claim dropped by vet", extra={"text": dec_key, "notes": notes})
+                continue
+            if status == "repair" and repaired:
+                claim = claim.model_copy(update={"text": repaired.strip()})
+            kept_claims.append(claim)
+
+        kept_relations: list[ExtractedRelation] = []
+        for relation in extraction.relations:
+            rel_key = f"{relation.from_name} → {relation.relation} → {relation.to_name}"
+            dec = relation_decisions.get(rel_key, {})
+            status = dec.get("status", "keep")
+            notes = dec.get("review_notes", [])
+            all_decisions.append(ExtractionItemDecision(
+                item_type="relation",
+                name=rel_key,
+                status=status,
+                review_notes=notes if isinstance(notes, list) else [notes] if notes else [],
+            ))
+            if status == "drop":
+                logger.debug("relation dropped by vet", extra={"rel": rel_key, "notes": notes})
+                continue
+            # Only keep relations whose concepts survived vetting
+            if relation.from_name in kept_concept_names and relation.to_name in kept_concept_names:
+                kept_relations.append(relation)
+
+        logger.info(
+            "vet_extraction applied",
+            extra={
+                "concepts_kept": len(kept_concepts),
+                "concepts_dropped": len(extraction.concepts) - len(kept_concepts),
+                "claims_kept": len(kept_claims),
+                "claims_dropped": len(extraction.claims) - len(kept_claims),
+                "relations_kept": len(kept_relations),
+            },
+        )
+        return ExtractionVettingResult(
+            concepts=kept_concepts,
+            claims=kept_claims,
+            relations=kept_relations,
+            decisions=all_decisions,
+        )
 
     async def vet_pedagogical_evidence(
         self,
@@ -1037,11 +688,7 @@ class StructuredLLMProvider(AIProvider):
 
     def _sanitize_llm_extraction(self, result: ExtractionResult, text: str, tags: list[str]) -> ExtractionResult:
         domain = tags[0].strip().title() if tags else (result.domain.strip() or "General")
-        topics = [
-            self.fallback_provider._titleize_phrase(topic)
-            for topic in dedupe_preserve_order([domain, *result.topics])
-            if topic.strip()
-        ]
+        topics = dedupe_preserve_order([domain, *[t.strip() for t in result.topics if t.strip()]])
         refined_concepts = self._sanitize_concepts(result.concepts, text)
         concept_names = [item["canonical_name"] for item in refined_concepts]
         refined_claims = self._sanitize_claims(result.claims, concept_names, text)
@@ -1060,16 +707,16 @@ class StructuredLLMProvider(AIProvider):
         concepts_by_name: dict[str, dict[str, Any]] = {}
         for concept in concepts:
             raw_name = concept.canonical_name if hasattr(concept, "canonical_name") else concept.get("canonical_name", "")
-            cleaned_name = self.fallback_provider._clean_concept_name(raw_name)
-            if not self.fallback_provider._is_valid_concept(cleaned_name):
+            name = re.sub(r"\s+", " ", raw_name).strip()
+            if not name:
                 continue
             evidence_source = concept.evidence_quotes if hasattr(concept, "evidence_quotes") else concept.get("evidence_quotes", [])
             evidence_quotes = self._sanitize_quotes(evidence_source, text)
-            key = normalize_text(cleaned_name)
+            key = normalize_text(name)
             aliases = [
-                self.fallback_provider._titleize_phrase(alias)
+                alias.strip()
                 for alias in (concept.aliases if hasattr(concept, "aliases") else concept.get("aliases", []))
-                if alias and normalize_text(alias) != key
+                if alias.strip() and normalize_text(alias) != key
             ]
             description = (concept.description if hasattr(concept, "description") else concept.get("description", "")).strip()
             confidence = float(concept.confidence if hasattr(concept, "confidence") else concept.get("confidence", 0.75))
@@ -1082,7 +729,7 @@ class StructuredLLMProvider(AIProvider):
                     existing["description"] = description
                 continue
             concepts_by_name[key] = {
-                "canonical_name": cleaned_name,
+                "canonical_name": name,
                 "aliases": dedupe_preserve_order(aliases),
                 "description": description,
                 "evidence_quotes": evidence_quotes[:3],
@@ -1112,8 +759,6 @@ class StructuredLLMProvider(AIProvider):
             supporting_quote = claim.supporting_quote if hasattr(claim, "supporting_quote") else claim.get("supporting_quote")
             supporting_quote = self._sanitize_quote(supporting_quote, text)
             confidence = float(claim.confidence if hasattr(claim, "confidence") else claim.get("confidence", 0.75))
-            if not explains and not supporting_quote:
-                continue
             refined_claims.append(
                 {
                     "text": text_value,

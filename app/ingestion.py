@@ -13,6 +13,7 @@ from app.schemas import (
     AddKnowledgeFragmentAccepted,
     CandidateHit,
     ConceptResolution,
+    ExtractionResult,
     IngestionSummary,
     UpsertConceptRequest,
 )
@@ -87,6 +88,28 @@ class IngestionService:
                     "concepts_count": len(extraction.concepts),
                     "claims_count": len(extraction.claims),
                     "relations_count": len(extraction.relations),
+                },
+            )
+
+            bind(step="vet_extraction")
+            vetting = await self.ai_provider.vet_extraction(
+                extraction=extraction,
+                text=episode.text,
+                language=episode.language,
+            )
+            extraction = ExtractionResult(
+                domain=extraction.domain,
+                topics=extraction.topics,
+                concepts=vetting.concepts,
+                claims=vetting.claims,
+                relations=vetting.relations,
+            )
+            logger.info(
+                "extraction vetted",
+                extra={
+                    "concepts_kept": len(extraction.concepts),
+                    "claims_kept": len(extraction.claims),
+                    "relations_kept": len(extraction.relations),
                 },
             )
 

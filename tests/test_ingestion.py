@@ -3,9 +3,112 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from app.ai_provider import StubAIProvider
 from app.ingestion import IngestionService
-from app.schemas import CandidateHit, UpsertConceptRequest
+from app.schemas import (
+    CandidateHit,
+    ExtractedConcept,
+    ExtractedClaim,
+    ExtractedRelation,
+    ExtractionResult,
+    UpsertConceptRequest,
+)
+
+
+@pytest.fixture
+def extraction_fn():
+    """Module-level override: returns appropriate fake extractions for integration tests."""
+    def _extract(text: str, language: str, tags: list[str]) -> ExtractionResult:
+        domain = tags[0].strip().title() if tags else "General"
+        if "Condicionamiento" in text and "contrasta" in text.lower():
+            return ExtractionResult(
+                domain="Psicología",
+                topics=["Psicología"],
+                concepts=[
+                    ExtractedConcept(
+                        canonical_name="Condicionamiento Clásico",
+                        confidence=0.9,
+                        evidence_quotes=["Condicionamiento Clásico contrasta con"],
+                    ),
+                    ExtractedConcept(
+                        canonical_name="Condicionamiento Operante",
+                        confidence=0.9,
+                        evidence_quotes=["contrasta con Condicionamiento Operante"],
+                    ),
+                ],
+                claims=[
+                    ExtractedClaim(
+                        text="El condicionamiento clásico contrasta con el condicionamiento operante.",
+                        confidence=0.85,
+                        explains=["Condicionamiento Clásico", "Condicionamiento Operante"],
+                        supporting_quote="Condicionamiento Clásico contrasta con Condicionamiento Operante",
+                    )
+                ],
+                relations=[
+                    ExtractedRelation(
+                        from_name="Condicionamiento Clásico",
+                        relation="CONTRASTS_WITH",
+                        to_name="Condicionamiento Operante",
+                        confidence=0.88,
+                    )
+                ],
+            )
+        if "Condicionamiento" in text:
+            return ExtractionResult(
+                domain="Psicología",
+                topics=["Psicología"],
+                concepts=[
+                    ExtractedConcept(
+                        canonical_name="Condicionamiento Clásico",
+                        confidence=0.9,
+                        evidence_quotes=["condicionamiento clásico"],
+                    ),
+                ],
+                claims=[
+                    ExtractedClaim(
+                        text=text.split(".")[0].strip() + ".",
+                        confidence=0.8,
+                        explains=["Condicionamiento Clásico"],
+                        supporting_quote="condicionamiento clásico",
+                    )
+                ],
+                relations=[],
+            )
+        if "Hardware" in text or "hardware" in text:
+            return ExtractionResult(
+                domain="Tecnología",
+                topics=["Tecnología"],
+                concepts=[
+                    ExtractedConcept(
+                        canonical_name="Hardware",
+                        confidence=0.9,
+                        evidence_quotes=["Hardware y software son componentes"],
+                    ),
+                    ExtractedConcept(
+                        canonical_name="Software",
+                        confidence=0.9,
+                        evidence_quotes=["Hardware y software son componentes"],
+                    ),
+                    ExtractedConcept(
+                        canonical_name="Conectividad",
+                        confidence=0.88,
+                        evidence_quotes=["conectividad permiten comunicar"],
+                    ),
+                ],
+                claims=[
+                    ExtractedClaim(
+                        text="Hardware y software son componentes fundamentales.",
+                        confidence=0.85,
+                        explains=["Hardware", "Software"],
+                        supporting_quote="Hardware y software son componentes fundamentales",
+                    )
+                ],
+                relations=[],
+            )
+        return ExtractionResult(domain=domain, topics=[domain])
+    return _extract
 
 
 def _wait_for_job_completion(client, headers, job_id: str, timeout: float = 2.0):

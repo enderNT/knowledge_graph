@@ -1208,6 +1208,28 @@ class ExtractionResult(BaseModel):
         return value if isinstance(value, list) else []
 
 
+class ExtractionItemDecision(BaseModel):
+    item_type: Literal["concept", "claim", "relation"]
+    name: str
+    status: Literal["keep", "drop", "repair"]
+    review_notes: list[str] = Field(default_factory=list)
+    repaired_text: str | None = None
+
+    @field_validator("review_notes", mode="before")
+    @classmethod
+    def coerce_review_notes_to_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value if isinstance(value, list) else []
+
+
+class ExtractionVettingResult(BaseModel):
+    concepts: list[ExtractedConcept] = Field(default_factory=list)
+    claims: list[ExtractedClaim] = Field(default_factory=list)
+    relations: list[ExtractedRelation] = Field(default_factory=list)
+    decisions: list[ExtractionItemDecision] = Field(default_factory=list)
+
+
 class PedagogicalEvidenceDecision(BaseModel):
     statement: str
     supporting_quote: str

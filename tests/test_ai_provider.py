@@ -7,6 +7,7 @@ import pytest
 
 from app.ai_provider import AnthropicGatewayProvider, OpenAICompatibleProvider, StubAIProvider, build_ai_provider
 from app.config import Settings
+from app.schemas import ExtractionResult, ExtractedConcept, ExtractedClaim, ExtractedRelation
 from app.utils import fit_embedding_dimensions
 
 
@@ -52,80 +53,211 @@ class _GatewayCapturedClient:
         return _GatewayCapturedResponse(self._content)
 
 
-def test_stub_extractor_prefers_named_entities_and_structured_sections(settings):
+def test_stub_extract_raises(settings):
     provider = StubAIProvider(settings)
-    text = """
-    La cultura madre mesoamericana fue la olmeca.
-
-    Periodos aproximados:
-
-    Periodo\tFechas aprox.
-    Preclásico temprano\t2500–1200 a. C.
-    Preclásico medio\t1200–400 a. C.
-    Preclásico tardío\t400 a. C.–200 d. C.
-
-    La cultura olmeca se desarrolló sobre todo durante el Preclásico medio, aprox. 1200–400 a. C.
-
-    Zonas que habitó:
-    Principalmente la costa del Golfo de México, en el sur de Veracruz y el occidente de Tabasco.
-
-    Centros importantes:
-    San Lorenzo, La Venta y Tres Zapotes.
-    """.strip()
-
-    extraction = asyncio.run(provider.extract(text, "es", ["Mesoamérica", "Historia"]))
-    concept_names = {item.canonical_name for item in extraction.concepts}
-    relation_tuples = {(item.from_name, item.relation, item.to_name) for item in extraction.relations}
-
-    assert {
-        "Cultura Olmeca",
-        "Preclásico Temprano",
-        "Preclásico Medio",
-        "Preclásico Tardío",
-        "Golfo de México",
-        "Veracruz",
-        "Tabasco",
-        "San Lorenzo",
-        "La Venta",
-        "Tres Zapotes",
-    }.issubset(concept_names)
-    assert "Historia" not in concept_names
-    assert "Periodos Aproximados" not in concept_names
-    assert "Todo Durante" not in concept_names
-    assert "Preclásico Temprano a C" not in concept_names
-    assert "Preclásico Medio a C" not in concept_names
-    assert ("Cultura Olmeca", "RELATED_TO", "Preclásico Medio") in relation_tuples
-    assert ("San Lorenzo", "PART_OF", "Cultura Olmeca") in relation_tuples
+    with pytest.raises(NotImplementedError, match="requires a real LLM provider"):
+        asyncio.run(provider.extract("Texto de prueba.", "es", ["General"]))
 
 
-def test_stub_extractor_keeps_explicit_contrast_relations(settings):
+def test_stub_vet_extraction_raises(settings):
     provider = StubAIProvider(settings)
-    text = "El condicionamiento clásico contrasta con el condicionamiento operante."
-
-    extraction = asyncio.run(provider.extract(text, "es", ["Psicología"]))
-    concept_names = [item.canonical_name for item in extraction.concepts]
-
-    assert "Condicionamiento Clásico" in concept_names
-    assert "Condicionamiento Operante" in concept_names
-    assert extraction.relations
-    assert extraction.relations[0].relation == "CONTRASTS_WITH"
-    assert extraction.relations[0].from_name == "Condicionamiento Clásico"
-    assert extraction.relations[0].to_name == "Condicionamiento Operante"
+    extraction = ExtractionResult(domain="General")
+    with pytest.raises(NotImplementedError, match="requires a real LLM provider"):
+        asyncio.run(provider.vet_extraction(extraction=extraction, text="Texto.", language="es"))
 
 
-def test_stub_extractor_trims_predicate_suffixes_from_concepts(settings):
-    provider = StubAIProvider(settings)
-    text = (
-        "Hardware y software son componentes fundamentales. "
-        "Redes y conectividad permiten comunicar dispositivos."
+def test_llm_sanitize_concepts_keeps_any_non_empty_name():
+    """After removing wordlist gates, _sanitize_concepts must not discard concepts for
+    language-specific reasons — only empty names are invalid."""
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    text = "Learning theory: general culture and period of history."
+    # These names would have been rejected by old _GENERIC_CONCEPT_TOKENS / _GENERIC_HEADINGS
+    llm_concepts = [
+        {
+            "canonical_name": "Learning Theory",
+            "aliases": [],
+            "description": "Framework for how learning occurs.",
+            "evidence_quotes": ["Learning theory"],
+            "confidence": 0.9,
+        },
+        {
+            "canonical_name": "General Culture",
+            "aliases": [],
+            "description": "Broad cultural context.",
+            "evidence_quotes": ["general culture"],
+            "confidence": 0.8,
+        },
+    ]
+    result = provider._sanitize_concepts(llm_concepts, text)
+    names = [item["canonical_name"] for item in result]
+    assert "Learning Theory" in names
+    assert "General Culture" in names
+
+
+def test_llm_sanitize_claims_keeps_claims_without_spanish_verbs():
+    """After removing _looks_like_claim gate, claims that lack Spanish verb markers
+    but are valid English/Portuguese sentences must be kept."""
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    text = "Classical conditioning associates stimuli and responses through repeated pairing."
+    claim_text = "Classical conditioning associates stimuli through pairing."
+    claims = [
+        {
+            "text": claim_text,
+            "confidence": 0.9,
+            "explains": ["Classical conditioning"],
+            "supporting_quote": "Classical conditioning associates stimuli",
+        }
+    ]
+    result = provider._sanitize_claims(claims, ["Classical conditioning"], text)
+    assert len(result) == 1
+    assert result[0]["text"] == claim_text
+
+
+def test_llm_sanitize_claims_keeps_multilingual_claims_equally():
+    """English, Spanish and Portuguese claims must pass through _sanitize_claims identically."""
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    texts_and_claims = [
+        (
+            "Operant conditioning shapes behavior through reinforcement.",
+            "Operant conditioning shapes behavior through reinforcement.",
+            "en",
+        ),
+        (
+            "O condicionamento operante molda o comportamento por reforço.",
+            "O condicionamento operante molda o comportamento por reforço.",
+            "pt",
+        ),
+        (
+            "El condicionamiento operante moldea la conducta por refuerzo.",
+            "El condicionamiento operante moldea la conducta por refuerzo.",
+            "es",
+        ),
+    ]
+    for text, claim_text, _lang in texts_and_claims:
+        claims = [{"text": claim_text, "confidence": 0.85, "explains": [], "supporting_quote": claim_text[:40]}]
+        result = provider._sanitize_claims(claims, [], text)
+        assert len(result) == 1, f"claim dropped for language {_lang}: {claim_text}"
+
+
+def test_llm_vet_extraction_keep_drop_repair():
+    """vet_extraction must apply keep/drop/repair decisions from the LLM."""
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+
+    extraction = ExtractionResult(
+        domain="Psicología",
+        topics=["Psicología"],
+        concepts=[
+            ExtractedConcept(canonical_name="Condicionamiento Clásico", confidence=0.9, evidence_quotes=["clásico"]),
+            ExtractedConcept(canonical_name="Periodos Aproximados", confidence=0.5, evidence_quotes=[]),
+        ],
+        claims=[
+            ExtractedClaim(text="El condicionamiento clásico asocia estímulos.", confidence=0.9, explains=["Condicionamiento Clásico"]),
+            ExtractedClaim(text="Introducción al manual.", confidence=0.4, explains=[]),
+        ],
+        relations=[
+            ExtractedRelation(from_name="Condicionamiento Clásico", relation="RELATED_TO", to_name="Periodos Aproximados"),
+        ],
+    )
+    text = "El condicionamiento clásico asocia estímulos. Introducción al manual. clásico"
+
+    vet_response = {
+        "concept_decisions": [
+            {"name": "Condicionamiento Clásico", "status": "keep", "review_notes": []},
+            {"name": "Periodos Aproximados", "status": "drop", "review_notes": ["non_teachable_heading"]},
+        ],
+        "claim_decisions": [
+            {"name": "El condicionamiento clásico asocia estímulos.", "status": "keep", "review_notes": []},
+            {"name": "Introducción al manual.", "status": "drop", "review_notes": ["meta_content"]},
+        ],
+        "relation_decisions": [
+            {"name": "Condicionamiento Clásico → RELATED_TO → Periodos Aproximados", "status": "drop", "review_notes": ["target_dropped"]},
+        ],
+    }
+    provider.client = _CapturedClient(vet_response)
+
+    result = asyncio.run(
+        provider.vet_extraction(extraction=extraction, text=text, language="es")
     )
 
-    extraction = asyncio.run(provider.extract(text, "es", ["Tecnología"]))
-    concept_names = {item.canonical_name for item in extraction.concepts}
+    assert len(result.concepts) == 1
+    assert result.concepts[0].canonical_name == "Condicionamiento Clásico"
+    assert len(result.claims) == 1
+    assert result.claims[0].text == "El condicionamiento clásico asocia estímulos."
+    assert len(result.relations) == 0
 
-    assert {"Hardware", "Software", "Redes", "Conectividad"}.issubset(concept_names)
-    assert all(" Son " not in f" {name} " for name in concept_names)
-    assert all(" Permiten " not in f" {name} " for name in concept_names)
+    dropped_concept_decisions = [d for d in result.decisions if d.item_type == "concept" and d.status == "drop"]
+    assert any(d.name == "Periodos Aproximados" for d in dropped_concept_decisions)
+
+
+def test_llm_vet_extraction_repair_updates_concept_name():
+    """A 'repair' decision must update the concept's canonical_name."""
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+
+    extraction = ExtractionResult(
+        domain="Test",
+        concepts=[
+            ExtractedConcept(canonical_name="Condicionamiento clasico", confidence=0.9, evidence_quotes=[]),
+        ],
+    )
+    text = "Condicionamiento clasico."
+
+    vet_response = {
+        "concept_decisions": [
+            {
+                "name": "Condicionamiento clasico",
+                "status": "repair",
+                "review_notes": ["casing"],
+                "repaired_text": "Condicionamiento Clásico",
+            }
+        ],
+        "claim_decisions": [],
+        "relation_decisions": [],
+    }
+    provider.client = _CapturedClient(vet_response)
+    result = asyncio.run(provider.vet_extraction(extraction=extraction, text=text, language="es"))
+
+    assert len(result.concepts) == 1
+    assert result.concepts[0].canonical_name == "Condicionamiento Clásico"
 
 
 def test_fit_embedding_dimensions_reduces_to_target_size():
