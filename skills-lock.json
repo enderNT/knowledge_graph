@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "cavecrew": {
+      "source": "juliusbrussee/caveman",
+      "sourceType": "github",
+      "skillPath": "skills/cavecrew/SKILL.md",
+      "computedHash": "505d836228d1c5e14834ff5d62aad72390c7d27f79c6aa7f9a7a55ed6606d6a2"
+    },
+    "caveman": {
+      "source": "JuliusBrussee/caveman",
+      "sourceType": "github",
+      "skillPath": "skills/caveman/SKILL.md",
+      "computedHash": "1902fa0b569912d0c05736d8d98a72097d9b82719aac88c0c1d03bb546f9176d"
+    },
+    "caveman-compress": {
+      "source": "juliusbrussee/caveman",
+      "sourceType": "github",
+      "skillPath": "skills/caveman-compress/SKILL.md",
+      "computedHash": "1e9b3e2bf68b75dc0252c4328c8514bea79d4d8f7d7259da616ba7d12cad6865"
+    },
+    "claude-design": {
+      "source": "jiji262/claude-design-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "b8f0bc6685a0dfa63460471567751dc4edf6521616b42e14238d2653a91ce796"
+    },
+    "remotion-best-practices": {
+      "source": "remotion-dev/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remotion/SKILL.md",
+      "computedHash": "006f8413941b59eff54a7ce64851b8a2fb79e7a3a5f1a895e97a48f01482553d"
+    }
+  }
+}
