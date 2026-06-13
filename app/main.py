@@ -6,7 +6,11 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+import json
+
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
 
 from app.ai_provider import AIProvider, build_ai_provider
 from app.arcadedb_client import ArcadeDBClient
@@ -116,6 +120,20 @@ def create_app(
             await actual_ai_provider.close()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        errors = json.loads(json.dumps(exc.errors(), default=str))
+        logger.warning(
+            "request validation failed",
+            extra={
+                "path": request.url.path,
+                "method": request.method,
+                "errors": errors,
+            },
+        )
+        body = json.dumps({"detail": errors}, ensure_ascii=False)
+        return Response(status_code=422, content=body, media_type="application/json")
 
     @app.middleware("http")
     async def request_trace_middleware(request: Request, call_next):

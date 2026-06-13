@@ -138,6 +138,54 @@ async def test_backend_error_translation(status_code: int, error_type: type[Exce
 
 
 @pytest.mark.anyio
+async def test_validation_error_detail_is_propagated():
+    """A FastAPI 422 with list-form `detail` must surface the offending field,
+    not collapse to the generic 'backend request failed'."""
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return _response(
+            request,
+            422,
+            {
+                "detail": [
+                    {
+                        "type": "int_parsing",
+                        "loc": ["body", "submissions", 0, "selected_choices", 0],
+                        "msg": "Input should be a valid integer",
+                    }
+                ]
+            },
+        )
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MCPBackendError) as exc_info:
+            await client.search_candidates(query="memoria")
+    finally:
+        await client.close()
+
+    message = str(exc_info.value)
+    assert message != "backend request failed"
+    assert "body.submissions.0.selected_choices.0" in message
+    assert "Input should be a valid integer" in message
+    assert exc_info.value.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_dict_form_error_detail_is_propagated():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return _response(request, 400, {"detail": {"reason": "bad shape", "field": "x"}})
+
+    client = MCPBackendClient(_settings(), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MCPBackendError) as exc_info:
+            await client.search_candidates(query="memoria")
+    finally:
+        await client.close()
+
+    assert "bad shape" in str(exc_info.value)
+
+
+@pytest.mark.anyio
 async def test_learning_context_request_and_response_shape():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/search/learning-context"

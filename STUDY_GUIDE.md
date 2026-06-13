@@ -319,8 +319,26 @@ Envía las respuestas de un bloque. Retorna evaluación + siguiente bloque o cie
 |-----------|------|---------|-------------|
 | `session_id` | string | **requerido** | ID de la sesión activa |
 | `block_id` | string | **requerido** | ID del bloque respondido (viene en `current_block`) |
-| `submissions` | list | **requerido** | `[{"item_id": "...", "response": "..."}]` |
+| `submissions` | list | **requerido** | Lista de `AdaptiveItemSubmission` (ver abajo) |
 | `interaction_events` | list | null | Eventos opcionales (hints usados, retries, etc.) |
+
+**Formato de cada submission** — usar el campo que corresponde al `question_type` del ítem:
+
+| `question_type` | Campo a rellenar | Tipo |
+|----------------|------------------|------|
+| `multiple_choice_single` / `multiple_choice_multi` | `selected_choices` | `list[int \| str]` — índices (0-based) **o** el texto de la opción |
+| `true_false` | `boolean_answer` | `bool` |
+| `open` / `cloze` | `response_text` | `string` |
+
+```json
+[
+  {"item_id": "itm_xxx", "selected_choices": [0]},
+  {"item_id": "itm_yyy", "boolean_answer": true},
+  {"item_id": "itm_zzz", "response_text": "El logaritmo es el inverso de la exponencial"}
+]
+```
+
+> `selected_choices` acepta tanto índices enteros (`[0, 2]`) como el texto exacto de la opción (`["Verdadero", "Ninguna de las anteriores"]`). El motor resuelve texto→índice de forma case-insensitive.
 
 #### `get_adaptive_session`
 Consulta estado de una sesión sin avanzarla.

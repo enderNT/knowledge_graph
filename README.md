@@ -169,6 +169,8 @@ Para listar todos los episodes disponibles usar `kg_list_episodes`. Ver [STUDY_G
 
 Mientras `AI_PROVIDER=stub`, no hace falta proveedor externo.
 
+Los logs salen en JSON estructurado (un objeto por línea) con `run_id` y `step` en cada entrada. Para rastrear un request concreto, pasa `X-Request-ID: <id>` — ese valor aparece como `run_id` en todos los logs del ciclo de vida de esa petición.
+
 Matriz de proveedores:
 
 | `AI_PROVIDER` | Extracción LLM | Embeddings |
@@ -212,6 +214,7 @@ AI_PROVIDER=stub
 
 ### API (`api`)
 - `KG_API_KEY`
+- `LOG_LEVEL=DEBUG|INFO|WARNING|ERROR` (default `INFO`) — nivel de logging JSON estructurado
 - `AI_PROVIDER=stub|openai_compatible|anthropic`
 - `EMBEDDING_PROVIDER=stub|openai_compatible`
 - `OPENAI_API_KEY`, `OPENAI_CHAT_MODEL`, `OPENAI_EMBEDDINGS_MODEL`, `OPENAI_BASE_URL`

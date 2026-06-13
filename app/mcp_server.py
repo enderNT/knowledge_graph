@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Protocol
 
@@ -11,6 +12,8 @@ from pydantic import Field
 
 from app.config import Settings, get_settings
 from app.mcp_backend_client import MCPBackendClient, MCPBackendError
+
+logger = logging.getLogger(__name__)
 
 
 class MCPBackendProtocol(Protocol):
@@ -279,7 +282,10 @@ def create_mcp_server(
     )
 
     def translate_backend_error(exc: MCPBackendError) -> ToolError:
-        return ToolError(str(exc))
+        status = getattr(exc, "status_code", None)
+        message = f"[{status}] {exc}" if status is not None else str(exc)
+        logger.warning("mcp tool backend error", extra={"status_code": status, "detail": str(exc)})
+        return ToolError(message)
 
     @mcp.tool(name="add_knowledge_fragment")
     async def add_knowledge_fragment(
@@ -693,7 +699,7 @@ def create_mcp_server(
         query: str | None = None,
         episode_id: str | None = None,
         job_id: str | None = None,
-        study_mode: Annotated[str, Field(pattern="^(hybrid|backlog|recovery|isolated)$")] = "hybrid",
+        study_mode: Annotated[str, Field(pattern="^(hybrid|backlog|recovery|isolated|auto)$")] = "hybrid",
         domain_hint: str | None = None,
         language: str = "es",
         constraints: dict[str, Any] | None = None,

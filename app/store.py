@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -66,6 +67,8 @@ from app.schemas import (
 )
 from app.utils import cosine_similarity, make_prefixed_id, normalize_text, utcnow_iso
 from app.utils import fit_embedding_dimensions
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeStore(Protocol):
@@ -674,7 +677,11 @@ class ArcadeKnowledgeStore:
                     ),
                     {"query_vector": query_embedding, "limit": limit * self.settings.candidate_limit_multiplier},
                 )
-            except httpx.HTTPStatusError:
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "vector candidate search failed, falling back to lexical only",
+                    extra={"status_code": exc.response.status_code},
+                )
                 vector_rows = []
             for row in vector_rows:
                 if domain_hint and row.get("domain") != domain_hint:
@@ -2301,7 +2308,11 @@ class ArcadeKnowledgeStore:
     ) -> list[dict[str, Any]]:
         try:
             return await self.client.query(command, params, language=language)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "safe query failed, returning empty result",
+                extra={"command": command[:300], "status_code": exc.response.status_code},
+            )
             return []
 
     async def _ensure_domain(self, name: str) -> None:
@@ -2357,7 +2368,11 @@ class ArcadeKnowledgeStore:
                     to_uid=concept_uid,
                     attributes={"created_at": utcnow_iso()},
                 )
-            except httpx.HTTPStatusError:
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "failed to ensure alias, concept will miss this alias",
+                    extra={"concept_uid": concept_uid, "alias": alias, "status_code": exc.response.status_code},
+                )
                 continue
 
     async def _edge_exists(
@@ -2429,7 +2444,11 @@ class ArcadeKnowledgeStore:
                 rows = await self.client.query(
                     f"SELECT embedding FROM {record_type} WHERE embedding IS NOT NULL LIMIT 1"
                 )
-            except httpx.HTTPStatusError:
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "embedding dimension probe failed",
+                    extra={"record_type": record_type, "status_code": exc.response.status_code},
+                )
                 rows = []
             if not rows:
                 continue
@@ -2457,6 +2476,7 @@ class ArcadeKnowledgeStore:
         try:
             data = json.loads(str(raw))
         except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("failed to parse stored string list, returning empty", extra={"raw": str(raw)[:200]})
             return []
         if not isinstance(data, list):
             return []
@@ -2479,7 +2499,11 @@ class ArcadeKnowledgeStore:
             return _empty_model()
         try:
             return model.model_validate_json(str(raw))
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "failed to parse stored model, falling back to empty",
+                extra={"model": getattr(model, "__name__", str(model)), "error": str(exc)[:200]},
+            )
             return _empty_model()
 
     @staticmethod
@@ -2489,15 +2513,26 @@ class ArcadeKnowledgeStore:
         try:
             data = json.loads(str(raw))
         except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "failed to parse stored model list, returning empty",
+                extra={"model": getattr(model, "__name__", str(model)), "raw": str(raw)[:200]},
+            )
             return []
         if not isinstance(data, list):
             return []
         items: list[Any] = []
+        skipped = 0
         for entry in data:
             try:
                 items.append(model.model_validate(entry))
             except Exception:
+                skipped += 1
                 continue
+        if skipped:
+            logger.warning(
+                "skipped unparseable items in stored model list",
+                extra={"model": getattr(model, "__name__", str(model)), "skipped": skipped, "kept": len(items)},
+            )
         return items
 
     def _job_from_row(self, row: dict[str, Any]) -> JobRecord:

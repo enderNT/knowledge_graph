@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Protocol
 
@@ -13,6 +14,8 @@ from app.agent_content import AgentContentGenerator, build_agent_content_generat
 from app.agent_mcp_client import AgentMCPUpstreamClient, AgentMCPUpstreamError
 from app.agent_proxy import AgentProxyService
 from app.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class AgentUpstreamProtocol(Protocol):
@@ -289,7 +292,10 @@ def create_agent_mcp_server(
     )
 
     def translate_error(exc: AgentMCPUpstreamError) -> ToolError:
-        return ToolError(str(exc))
+        status = getattr(exc, "status_code", None)
+        message = f"[{status}] {exc}" if status is not None else str(exc)
+        logger.warning("agent mcp tool upstream error", extra={"status_code": status, "detail": str(exc)})
+        return ToolError(message)
 
     @mcp.tool(name="explain_topic")
     async def explain_topic(

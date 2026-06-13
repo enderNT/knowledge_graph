@@ -1,10 +1,31 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+def _raise_for_status(response: httpx.Response, *, operation: str, command: str | None = None) -> None:
+    """raise_for_status, but log the ArcadeDB error body first so DB-level
+    failures (constraint violations, syntax errors) are not opaque."""
+    if response.status_code < 400:
+        return
+    body = (response.text or "").strip()
+    logger.error(
+        "arcadedb error",
+        extra={
+            "operation": operation,
+            "status_code": response.status_code,
+            "command": (command or "")[:300],
+            "body": body[:500],
+        },
+    )
+    response.raise_for_status()
 
 
 class ArcadeDBClient:
@@ -26,13 +47,13 @@ class ArcadeDBClient:
             json={"command": command},
             headers={"Content-Type": "application/json"},
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="server_command", command=command)
         return response.json().get("result")
 
     async def database_exists(self, database: str | None = None) -> bool:
         name = database or self.settings.arcadedb_database
         response = await self.client.get(f"api/v1/exists/{name}")
-        response.raise_for_status()
+        _raise_for_status(response, operation="database_exists", command=name)
         return bool(response.json()["result"])
 
     async def query(self, command: str, params: dict[str, Any] | None = None, language: str = "sql") -> list[dict[str, Any]]:
@@ -41,7 +62,7 @@ class ArcadeDBClient:
             json={"language": language, "command": command, "params": params or {}},
             headers={"Content-Type": "application/json"},
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="query", command=command)
         return response.json().get("result", [])
 
     async def command(self, command: str, params: dict[str, Any] | None = None, language: str = "sql") -> list[dict[str, Any]]:
@@ -50,7 +71,7 @@ class ArcadeDBClient:
             json={"language": language, "command": command, "params": params or {}},
             headers={"Content-Type": "application/json"},
         )
-        response.raise_for_status()
+        _raise_for_status(response, operation="command", command=command)
         return response.json().get("result", [])
 
     async def close(self) -> None:

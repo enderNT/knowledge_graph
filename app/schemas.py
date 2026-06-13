@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.utils import normalize_text
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_RELATIONS = {
@@ -18,6 +22,37 @@ ALLOWED_RELATIONS = {
     "MENTIONED_IN",
     "ALIAS_OF",
 }
+
+
+def coerce_enum_token(value: Any) -> Any:
+    """Normalize a string enum token sent by an agent: trim, lowercase, and
+    collapse internal spaces/hyphens to underscores. Non-strings pass through
+    untouched so Pydantic raises its standard (now-visible) validation error."""
+    if isinstance(value, str):
+        token = value.strip().lower()
+        return re.sub(r"[\s\-]+", "_", token)
+    return value
+
+
+def coerce_enum_list(value: Any) -> Any:
+    """Apply coerce_enum_token element-wise when the field is a list."""
+    if isinstance(value, list):
+        return [coerce_enum_token(item) for item in value]
+    return value
+
+
+def rescale_unit_interval(value: Any, *, field_name: str) -> Any:
+    """Coerce a value that should be in [0, 1] but may have been sent on a 0-100
+    scale by mistake. Values in (1, 100] are divided by 100 with a warning. Values
+    outside [0, 100] pass through untouched so Pydantic raises a clear error."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if 1.0 < value <= 100.0:
+            logger.warning(
+                "rescaled value from 0-100 to 0-1",
+                extra={"field": field_name, "original": value},
+            )
+            return value / 100.0
+    return value
 
 
 class AddKnowledgeFragmentRequest(BaseModel):
@@ -612,6 +647,9 @@ class AdaptiveSessionConstraints(BaseModel):
     preferred_max_difficulty: AdaptiveDifficulty | None = None
     allow_scaffolding: bool = True
 
+    _coerce_question_types = field_validator("allowed_question_types", mode="before")(coerce_enum_list)
+    _coerce_max_difficulty = field_validator("preferred_max_difficulty", mode="before")(coerce_enum_token)
+
 
 class AdaptiveScaffoldingPolicy(BaseModel):
     allow_hint_after_error: bool = False
@@ -681,6 +719,8 @@ class GetSRStateRequest(BaseModel):
     concept_uid: str = Field(min_length=1)
     dimension: PedagogicalDimension
 
+    _coerce_dimension = field_validator("dimension", mode="before")(coerce_enum_token)
+
 
 class GetSRStateResponse(BaseModel):
     state: SpacedRepetitionState
@@ -703,6 +743,15 @@ class UpdateSRFromBlockRequest(BaseModel):
     precision: float = Field(default=0.0, ge=0.0, le=1.0)
     was_direct_evaluation: bool = True
 
+    _coerce_enums = field_validator(
+        "dimension", "block_verdict", "block_difficulty", mode="before"
+    )(coerce_enum_token)
+
+    @field_validator("coverage", "precision", mode="before")
+    @classmethod
+    def _rescale_signals(cls, value: Any, info: Any) -> Any:
+        return rescale_unit_interval(value, field_name=info.field_name)
+
 
 class UpdateSRFromBlockResponse(BaseModel):
     state: SpacedRepetitionState
@@ -715,6 +764,8 @@ class ApplyPrereqReliefRequest(BaseModel):
     source_concept_uid: str = Field(min_length=1)
     source_dimension: PedagogicalDimension
     quality_q: int = Field(ge=0, le=5)
+
+    _coerce_dimension = field_validator("source_dimension", mode="before")(coerce_enum_token)
 
 
 class ApplyPrereqReliefResponse(BaseModel):
@@ -788,7 +839,7 @@ class AdaptiveInteractionEvent(BaseModel):
 class AdaptiveItemSubmission(BaseModel):
     item_id: str = Field(min_length=1)
     response_text: str | None = None
-    selected_choices: list[int] = Field(default_factory=list)
+    selected_choices: list[int | str] = Field(default_factory=list)
     boolean_answer: bool | None = None
 
 
@@ -853,6 +904,8 @@ class AdaptiveSessionStartRequest(BaseModel):
     domain_hint: str | None = None
     language: str = "es"
     constraints: AdaptiveSessionConstraints = Field(default_factory=AdaptiveSessionConstraints)
+
+    _coerce_study_mode = field_validator("study_mode", mode="before")(coerce_enum_token)
 
     @model_validator(mode="after")
     def validate_single_reference(self) -> "AdaptiveSessionStartRequest":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -9,6 +10,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class AgentMCPUpstreamError(Exception):
@@ -85,10 +88,13 @@ class AgentMCPUpstreamClient:
         except AgentMCPUpstreamError:
             raise
         except Exception as exc:  # pragma: no cover - defensive wrapper
-            raise AgentMCPUpstreamError("upstream MCP request failed") from exc
+            logger.error("upstream MCP request failed", extra={"tool": name, "error": str(exc) or exc.__class__.__name__})
+            raise AgentMCPUpstreamError(f"upstream MCP request failed: {exc or exc.__class__.__name__}") from exc
 
         if result.isError:
-            raise AgentMCPUpstreamError(self._extract_error_text(result) or f"upstream tool failed: {name}")
+            error_text = self._extract_error_text(result)
+            logger.warning("upstream tool returned error", extra={"tool": name, "error": error_text})
+            raise AgentMCPUpstreamError(error_text or f"upstream tool failed: {name}")
 
         structured = getattr(result, "structuredContent", None)
         if isinstance(structured, dict):
@@ -98,6 +104,7 @@ class AgentMCPUpstreamClient:
 
         text = self._extract_text(result)
         if not text:
+            logger.warning("upstream tool returned empty result", extra={"tool": name})
             return {}
         try:
             payload = json.loads(text)
@@ -553,12 +560,21 @@ class AgentMCPUpstreamClient:
                     await session.initialize()
                     yield session
         except httpx.HTTPStatusError as exc:
+            body = (exc.response.text or "").strip()
+            logger.warning(
+                "upstream MCP http error",
+                extra={"status_code": exc.response.status_code, "body": body[:500]},
+            )
             message = f"upstream MCP http error: {exc.response.status_code}"
+            if body:
+                message = f"{message}: {body[:500]}"
             raise AgentMCPUpstreamError(message, status_code=exc.response.status_code) from exc
         except httpx.HTTPError as exc:
-            raise AgentMCPUpstreamError("upstream MCP transport failed") from exc
+            logger.error("upstream MCP transport failed", extra={"error": str(exc) or exc.__class__.__name__})
+            raise AgentMCPUpstreamError(f"upstream MCP transport failed: {exc or exc.__class__.__name__}") from exc
         except Exception as exc:  # pragma: no cover - SDK-level failure
-            raise AgentMCPUpstreamError("upstream MCP session failed") from exc
+            logger.error("upstream MCP session failed", extra={"error": str(exc) or exc.__class__.__name__})
+            raise AgentMCPUpstreamError(f"upstream MCP session failed: {exc or exc.__class__.__name__}") from exc
 
     @staticmethod
     def _extract_text(result: Any) -> str:

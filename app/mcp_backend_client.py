@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+import logging
 import time
 from typing import Any
 
 import httpx
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class MCPBackendError(Exception):
@@ -44,8 +48,9 @@ class MCPBackendClient:
     async def check_ready(self) -> tuple[bool, dict[str, Any]]:
         try:
             response = await self._client.get("/health/ready")
-        except httpx.HTTPError:
-            return False, {"status": "degraded", "detail": "backend request failed"}
+        except httpx.HTTPError as exc:
+            logger.warning("backend readiness check transport error", extra={"error": str(exc) or exc.__class__.__name__})
+            return False, {"status": "degraded", "detail": f"backend transport error: {exc or exc.__class__.__name__}"}
 
         try:
             payload = response.json()
@@ -569,12 +574,20 @@ class MCPBackendClient:
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
-            raise MCPBackendError("backend request failed") from exc
+            logger.error(
+                "backend transport error",
+                extra={"method": method, "path": path, "error": str(exc) or exc.__class__.__name__},
+            )
+            raise MCPBackendError(f"backend transport error: {exc or exc.__class__.__name__}") from exc
 
         if response.status_code < 400:
             return response.json()
 
         detail = self._extract_error_detail(response)
+        logger.warning(
+            "backend request failed",
+            extra={"method": method, "path": path, "status_code": response.status_code, "detail": detail},
+        )
         if response.status_code in {401, 403}:
             raise MCPBackendAuthError(detail or "backend authentication failed", status_code=response.status_code)
         if response.status_code == 404:
@@ -594,10 +607,35 @@ class MCPBackendClient:
             detail = payload.get("detail")
             if isinstance(detail, str):
                 return detail
+            if isinstance(detail, list):
+                # FastAPI validation errors: [{"loc": [...], "msg": "...", ...}, ...]
+                summary = MCPBackendClient._summarize_validation_errors(detail)
+                if summary:
+                    return summary
+            if isinstance(detail, dict):
+                return json.dumps(detail, ensure_ascii=False)
             error = payload.get("error")
             if isinstance(error, str):
                 return error
-        return None
+            if detail is not None:
+                return json.dumps(detail, ensure_ascii=False, default=str)
+        return response.text.strip() or None
+
+    @staticmethod
+    def _summarize_validation_errors(errors: list[Any]) -> str | None:
+        parts: list[str] = []
+        for item in errors:
+            if not isinstance(item, dict):
+                parts.append(str(item))
+                continue
+            loc = item.get("loc")
+            msg = item.get("msg") or item.get("type") or "invalid"
+            if isinstance(loc, (list, tuple)):
+                location = ".".join(str(segment) for segment in loc)
+            else:
+                location = str(loc) if loc is not None else ""
+            parts.append(f"{location}: {msg}" if location else str(msg))
+        return "; ".join(parts) or None
 
     async def _sleep(self, seconds: float) -> None:
         import asyncio

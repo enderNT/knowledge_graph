@@ -786,6 +786,41 @@ class AdaptiveLearningService:
             generated_at=utcnow_iso(),
         )
 
+    @staticmethod
+    def _warn_missing_submission_field(item: AdaptiveBlockItem, submission: AdaptiveItemSubmission) -> None:
+        """Surface the silent score-to-zero case where the agent sent a submission
+        that lacks the field required by the item's question type."""
+        qt = item.question_type
+        missing: str | None = None
+        if qt in {"multiple_choice_single", "multiple_choice_multi"} and not submission.selected_choices:
+            missing = "selected_choices"
+        elif qt == "true_false" and submission.boolean_answer is None:
+            missing = "boolean_answer"
+        elif qt in {"open", "cloze"} and not (submission.response_text or "").strip():
+            missing = "response_text"
+        if missing:
+            logger.warning(
+                "submission missing expected field for question type",
+                extra={"item_id": item.item_id, "question_type": qt, "missing_field": missing},
+            )
+
+    @staticmethod
+    def _resolve_choice_indexes(raw: list[int | str], choices: list[str]) -> list[int]:
+        """Convert choice submissions (index or text) to integer indexes."""
+        resolved: list[int] = []
+        for value in raw:
+            if isinstance(value, int):
+                resolved.append(value)
+            else:
+                normalized = value.strip().lower()
+                for idx, choice in enumerate(choices):
+                    if choice.strip().lower() == normalized:
+                        resolved.append(idx)
+                        break
+                else:
+                    logger.warning("submitted choice text not found in item choices", extra={"value": value[:80]})
+        return resolved
+
     def _evaluate_item(
         self,
         *,
@@ -794,12 +829,14 @@ class AdaptiveLearningService:
         submission: AdaptiveItemSubmission,
         interaction: AdaptiveInteractionEvent,
     ) -> AdaptiveItemResult:
+        selected_indexes = self._resolve_choice_indexes(submission.selected_choices, item.choices)
+        self._warn_missing_submission_field(item, submission)
         base_score = 0.0
         coverage = 0.0
         precision = 0.0
         error_signal = 0.15
         if item.question_type == "multiple_choice_single":
-            base_score = 1.0 if submission.selected_choices[:1] == answer_key.correct_choice_indexes[:1] else 0.0
+            base_score = 1.0 if selected_indexes[:1] == answer_key.correct_choice_indexes[:1] else 0.0
             coverage = precision = base_score
             error_signal = 1.0 if base_score else 0.15
         elif item.question_type == "true_false":
@@ -808,7 +845,7 @@ class AdaptiveLearningService:
             error_signal = 1.0 if base_score else 0.15
         elif item.question_type == "multiple_choice_multi":
             expected = set(answer_key.correct_choice_indexes)
-            selected = set(submission.selected_choices)
+            selected = set(selected_indexes)
             true_positive = len(expected & selected)
             false_positive = len(selected - expected)
             coverage = true_positive / max(len(expected), 1)

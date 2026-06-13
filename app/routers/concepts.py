@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.dependencies import require_private_api_access
@@ -12,6 +14,8 @@ from app.schemas import (
     UpsertConceptRequest,
 )
 from app.store import ConceptConflictError, ConceptUpsertTargetNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/v1/concepts", tags=["concepts"])
@@ -27,6 +31,7 @@ async def create_concept(payload: CreateConceptRequest, services=Depends(require
             source_confidence=1.0,
         )
     except ConceptConflictError as exc:
+        logger.warning("concept create conflict", extra={"canonical_name": payload.canonical_name, "detail": str(exc)})
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return {"concept": concept, "created": True}
 
@@ -41,8 +46,10 @@ async def upsert_concept(payload: UpsertConceptRequest, services=Depends(require
             source_confidence=1.0,
         )
     except ConceptConflictError as exc:
+        logger.warning("concept upsert conflict", extra={"canonical_name": payload.canonical_name, "detail": str(exc)})
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ConceptUpsertTargetNotFoundError as exc:
+        logger.warning("concept upsert target not found", extra={"uid": payload.uid, "detail": str(exc)})
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return {"concept": concept, "created": created}
 
@@ -57,6 +64,10 @@ async def link_concepts(payload: LinkConceptsRequest, services=Depends(require_p
         confidence=1.0,
     )
     if not created:
+        logger.warning(
+            "concept link target missing",
+            extra={"from_ref": payload.from_, "relation": payload.relation, "to_ref": payload.to},
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="source or target concept not found",
@@ -76,6 +87,7 @@ async def attach_concept_evidence(
             link_episode_claims=payload.link_episode_claims,
         )
     except ValueError as exc:
+        logger.warning("attach concept evidence failed", extra={"concept_ref": payload.concept_ref, "detail": str(exc)})
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
@@ -87,5 +99,6 @@ async def get_neighborhood(
 ) -> NeighborhoodResponse:
     neighborhood = await services.store.get_neighborhood(concept_ref, depth)
     if not neighborhood:
+        logger.warning("neighborhood concept not found", extra={"concept_ref": concept_ref, "depth": depth})
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="concept not found")
     return neighborhood
