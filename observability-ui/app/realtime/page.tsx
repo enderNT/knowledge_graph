@@ -151,7 +151,7 @@ export default function RealtimePage() {
 
         {filtered.map((event, i) => {
           const isOpen = expandedIdx === i;
-          const hasPayload = event.input_shape_json || event.output_shape_json || event.counts_json || event.error_message;
+          const hasPayload = event.input_shape != null || event.output_shape != null || event.counts != null || !!event.error_message;
           return (
             <div
               key={i}
@@ -194,9 +194,9 @@ export default function RealtimePage() {
                     </div>
                   )}
                   <div style={{ display: "flex", gap: 16 }}>
-                    <PayloadTree label="Input" json={event.input_shape_json} side="input" />
-                    <PayloadTree label="Output" json={event.output_shape_json} side="output" />
-                    <PayloadTree label="Counts" json={event.counts_json} side="output" />
+                    <PayloadTree label="Input" data={event.input_shape} side="input" />
+                    <PayloadTree label="Output" data={event.output_shape} side="output" />
+                    <PayloadTree label="Counts" data={event.counts} side="output" />
                   </div>
                 </div>
               )}

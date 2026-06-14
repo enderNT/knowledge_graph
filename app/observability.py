@@ -102,10 +102,16 @@ class ObservabilityService:
                         "error_message": item.get("error_message", ""),
                     },
                 )
-                # broadcast to SSE subscribers
+                # broadcast to SSE subscribers using the same shape as get_run_events:
+                # logger_name + already-parsed input_shape/output_shape/counts objects.
+                broadcast = dict(item)
+                broadcast["logger_name"] = item.get("logger", item.get("logger_name", ""))
+                broadcast.setdefault("input_shape", item.get("input_shape"))
+                broadcast.setdefault("output_shape", item.get("output_shape"))
+                broadcast.setdefault("counts", item.get("counts"))
                 for q in list(self._subscribers):
                     try:
-                        q.put_nowait(item)
+                        q.put_nowait(broadcast)
                     except asyncio.QueueFull:
                         pass
             except Exception:

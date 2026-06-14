@@ -67,9 +67,9 @@ export interface LogEvent {
   path?: string;
   status?: string;
   duration_ms?: number;
-  input_shape_json?: string;
-  output_shape_json?: string;
-  counts_json?: string;
+  input_shape?: unknown;
+  output_shape?: unknown;
+  counts?: unknown;
   error_type?: string;
   error_message?: string;
 }

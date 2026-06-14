@@ -43,7 +43,7 @@ function levelDot(level: string) {
 
 function EventRow({ event, baseMs }: { event: LogEvent; baseMs: number }) {
   const [open, setOpen] = useState(false);
-  const hasPayload = event.input_shape_json || event.output_shape_json || event.counts_json || event.error_message;
+  const hasPayload = event.input_shape != null || event.output_shape != null || event.counts != null || !!event.error_message;
   const isError = event.level === "ERROR" || event.level === "CRITICAL";
 
   return (
@@ -158,9 +158,9 @@ function EventRow({ event, baseMs }: { event: LogEvent; baseMs: number }) {
             </div>
           )}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <PayloadTree label="Input" json={event.input_shape_json} side="input" />
-            <PayloadTree label="Output" json={event.output_shape_json} side="output" />
-            <PayloadTree label="Counts" json={event.counts_json} side="output" />
+            <PayloadTree label="Input" data={event.input_shape} side="input" />
+            <PayloadTree label="Output" data={event.output_shape} side="output" />
+            <PayloadTree label="Counts" data={event.counts} side="output" />
           </div>
         </div>
       )}

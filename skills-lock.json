@@ -31,6 +31,12 @@
       "skillPath": "skills/minimalist-skill/SKILL.md",
       "computedHash": "08873a3131d3be27bef9bf3304b310b16b44ca6e3561aebe532797be3443f6bd"
     },
+    "neobrutalism": {
+      "source": "bergside/awesome-design-skills",
+      "sourceType": "github",
+      "skillPath": "skills/neobrutalism/SKILL.md",
+      "computedHash": "53dd3da4651bc1a9d7a2f826cdbba5ec7738cfb3407728f11929ca27a3355997"
+    },
     "remotion-best-practices": {
       "source": "remotion-dev/skills",
       "sourceType": "github",
