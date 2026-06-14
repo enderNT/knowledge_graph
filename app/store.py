@@ -1968,8 +1968,8 @@ class ArcadeKnowledgeStore:
                 "in.uid as to_uid, coalesce(in.canonical_name, in.text, in.name, in.value, in.uid) as to_name, "
                 "in.canonical_name as to_concept_name, in.text as to_text, "
                 "coalesce(in.domain, '') as to_domain, coalesce(in.description, '') as to_description, "
-                "@class as relation, confidence, evidence_episode_id "
-                "FROM E WHERE out IN (SELECT @rid FROM Concept WHERE uid = :uid)"
+                "@type as relation, confidence, evidence_episode_id "
+                "FROM (SELECT expand(outE()) FROM Concept WHERE uid = :uid)"
             ),
             {"uid": concept_uid},
         )
@@ -1979,8 +1979,8 @@ class ArcadeKnowledgeStore:
                 "out.uid as from_uid, coalesce(out.canonical_name, out.text, out.name, out.value, out.uid) as from_name, "
                 "out.canonical_name as from_concept_name, out.text as from_text, "
                 "coalesce(out.domain, '') as from_domain, coalesce(out.description, '') as from_description, "
-                "@class as relation, confidence, evidence_episode_id "
-                "FROM E WHERE in IN (SELECT @rid FROM Concept WHERE uid = :uid)"
+                "@type as relation, confidence, evidence_episode_id "
+                "FROM (SELECT expand(inE()) FROM Concept WHERE uid = :uid)"
             ),
             {"uid": concept_uid},
         )
@@ -2065,15 +2065,18 @@ class ArcadeKnowledgeStore:
         )
         mentioned_concept_uids = sorted(str(row.get("uid") or "") for row in mention_rows if row.get("uid"))
 
-        relation_rows = await self._safe_query(
-            (
-                "SELECT out.uid as from_uid, out.canonical_name as from_name, "
-                "in.uid as to_uid, in.canonical_name as to_name, "
-                "@class as relation, evidence_episode_id "
-                "FROM E WHERE evidence_episode_id = :episode_id"
-            ),
-            {"episode_id": episode.uid},
-        )
+        relation_rows: list[dict[str, Any]] = []
+        for _etype in ALLOWED_RELATIONS:
+            _rows = await self._safe_query(
+                (
+                    f"SELECT out.uid as from_uid, out.canonical_name as from_name, "
+                    f"in.uid as to_uid, in.canonical_name as to_name, "
+                    f"'{_etype}' as relation, evidence_episode_id "
+                    f"FROM {_etype} WHERE evidence_episode_id = :episode_id"
+                ),
+                {"episode_id": episode.uid},
+            )
+            relation_rows.extend(_rows)
         relation_uids = sorted(
             _tutor_relation_uid(
                 str(row.get("from_uid") or ""),

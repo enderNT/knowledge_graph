@@ -122,7 +122,9 @@ class AdaptiveLearningService:
         self,
         payload: AdaptiveSessionStartRequest,
     ) -> AdaptiveSessionStartResponse:
-        bind(step="start_session")
+        # Pre-generate so all events during planning/LLM work carry the session run_id
+        session_id = make_prefixed_id("ads")
+        bind(run_id=session_id, step="start_session")
         t0 = time.monotonic()
         logger.info(
             "adaptive session starting",
@@ -158,7 +160,7 @@ class AdaptiveLearningService:
         )
         initial_served_uids = [uid for key in block.answer_keys for uid in key.evidence_unit_ids]
         session = AdaptiveSessionSnapshot(
-            session_id=make_prefixed_id("ads"),
+            session_id=session_id,
             user_id=payload.user_id,
             study_mode=payload.study_mode,
             resolved_reference=tutor_context.resolved_reference,
@@ -193,7 +195,6 @@ class AdaptiveLearningService:
             interaction_events=[],
             block_result=None,
         )
-        bind(run_id=session.session_id)
         logger.info(
             "adaptive session created",
             extra={

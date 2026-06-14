@@ -51,6 +51,10 @@ class ObservabilityLogHandler(logging.Handler):
                 exc = record.exc_info[1]
                 event["error_type"] = type(exc).__name__
                 event["error_message"] = str(exc)[:500]
+            else:
+                # Explicit extras take effect when no exc_info (e.g. error logged without raise)
+                event["error_type"] = rec.get("error_type", "")
+                event["error_message"] = rec.get("error_message", "")
             self._service.enqueue(event)
         except Exception:
             self.handleError(record)

@@ -245,10 +245,11 @@ class ObservabilityService:
         return await self._client.query(sql, params)
 
     async def get_run_events(self, run_id: str) -> list[dict[str, Any]]:
-        return await self._client.query(
+        rows = await self._client.query(
             "SELECT FROM ObservabilityLog WHERE run_id = :run_id ORDER BY ts_epoch_ms ASC",
             {"run_id": run_id},
         )
+        return [_deserialize_event(row) for row in rows]
 
     async def get_run(self, run_id: str) -> dict[str, Any] | None:
         rows = await self._client.query(
@@ -266,6 +267,20 @@ class ObservabilityService:
             self._subscribers.remove(q)
         except ValueError:
             pass
+
+
+def _deserialize_event(row: dict[str, Any]) -> dict[str, Any]:
+    row = dict(row)
+    for field in ("input_shape", "output_shape", "counts"):
+        json_val = row.pop(f"{field}_json", None)
+        if json_val:
+            try:
+                row[field] = json.loads(json_val)
+            except Exception:
+                row[field] = None
+        else:
+            row.setdefault(field, None)
+    return row
 
 
 def _to_json(value: Any) -> str:

@@ -168,6 +168,13 @@ function EventRow({ event, baseMs }: { event: LogEvent; baseMs: number }) {
   );
 }
 
+const DB_INTERNAL_LOGGERS = new Set(["app.arcadedb_client"]);
+const DB_INTERNAL_EVENTS = new Set(["arcadedb error", "safe query failed, returning empty result"]);
+
+function isDbInternal(event: LogEvent) {
+  return DB_INTERNAL_LOGGERS.has(event.logger_name ?? "") || DB_INTERNAL_EVENTS.has(event.event ?? "");
+}
+
 function groupByStep(events: LogEvent[]) {
   const groups: { step: string; events: LogEvent[] }[] = [];
   let current: { step: string; events: LogEvent[] } | null = null;
@@ -202,8 +209,11 @@ export default function RunDetailPage({ params }: { params: Promise<{ run_id: st
   }, [run_id]);
 
   const baseMs = events[0]?.ts_epoch_ms ?? Date.now();
-  const groups = groupByStep(events);
-  const errorCount = events.filter((e) => e.level === "ERROR" || e.level === "CRITICAL").length;
+  const businessEvents = events.filter((e) => !isDbInternal(e));
+  const dbEvents = events.filter((e) => isDbInternal(e));
+  const groups = groupByStep(businessEvents);
+  const errorCount = businessEvents.filter((e) => e.level === "ERROR" || e.level === "CRITICAL").length;
+  const [dbOpen, setDbOpen] = useState(false);
 
   function toggleStep(step: string) {
     setExpandedSteps((prev) => {
@@ -256,9 +266,14 @@ export default function RunDetailPage({ params }: { params: Promise<{ run_id: st
 
         {/* Stats row */}
         <div style={{ marginTop: 14, display: "flex", gap: 20, paddingTop: 14, borderTop: "1px solid var(--border)", fontSize: 12 }}>
-          <span><strong>{events.length}</strong> <span style={{ color: "var(--text-secondary)" }}>events</span></span>
+          <span><strong>{businessEvents.length}</strong> <span style={{ color: "var(--text-secondary)" }}>events</span></span>
           {errorCount > 0 && (
             <span style={{ color: "var(--accent-red-text)" }}><strong>{errorCount}</strong> errors</span>
+          )}
+          {dbEvents.length > 0 && (
+            <span style={{ color: "var(--text-tertiary)" }}>
+              <strong>{dbEvents.length}</strong> db internal{dbEvents.length !== 1 ? "s" : ""}
+            </span>
           )}
         </div>
       </div>
@@ -270,7 +285,63 @@ export default function RunDetailPage({ params }: { params: Promise<{ run_id: st
         <div style={{ color: "var(--text-secondary)", textAlign: "center", padding: 48 }}>No events found for this run</div>
       )}
 
-      {!loading && events.length > 0 && (
+      {!loading && dbEvents.length > 0 && (
+        <div className="animate-enter animate-enter-delay-2" style={{ marginTop: 24 }}>
+          <button
+            onClick={() => setDbOpen((v) => !v)}
+            style={{
+              width: "100%",
+              background: "none",
+              border: "none",
+              borderTop: "1px solid var(--border)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "12px 0",
+            }}
+          >
+            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>{dbOpen ? "▼" : "▶"}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-tertiary)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+              DB Internals
+            </span>
+            <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+              {dbEvents.length} event{dbEvents.length !== 1 ? "s" : ""}
+            </span>
+            {dbEvents.some((e) => e.level === "ERROR") && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  background: "var(--accent-red-bg)",
+                  color: "var(--accent-red-text)",
+                  borderRadius: 3,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  fontWeight: 600,
+                }}
+              >
+                {dbEvents.filter((e) => e.level === "ERROR").length} error{dbEvents.filter((e) => e.level === "ERROR").length !== 1 ? "s" : ""}
+              </span>
+            )}
+          </button>
+          {dbOpen && (
+            <div style={{ paddingLeft: 8, opacity: 0.8 }}>
+              {dbEvents.map((event, i) => (
+                <EventRow key={`db-${event.ts_epoch_ms}-${i}`} event={event} baseMs={baseMs} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!loading && businessEvents.length === 0 && events.length > 0 && (
+        <div style={{ color: "var(--text-secondary)", textAlign: "center", padding: 48 }}>
+          No business events — all {events.length} events are DB internals
+        </div>
+      )}
+
+      {!loading && businessEvents.length > 0 && (
         <div className="animate-enter animate-enter-delay-1">
           {groups.map((group) => {
             const isExpanded = expandedSteps.has(group.step);
