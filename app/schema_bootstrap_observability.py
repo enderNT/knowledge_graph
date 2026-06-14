@@ -8,7 +8,7 @@ async def ensure_observability_schema(client: ArcadeDBClient) -> None:
         await client.server_command(f"create database {client._database}")
     for cmd in _build_commands():
         try:
-            await client.command(cmd)
+            await client.command_idempotent(cmd)
         except Exception:
             pass
 

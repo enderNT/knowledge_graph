@@ -571,6 +571,8 @@ class MCPBackendClient:
             await self._sleep(self._settings.mcp_poll_interval_seconds)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        t0_req = time.monotonic()
+        logger.info("backend request start", extra={"method": method, "path": path, "input_shape": {"method": method, "path": path}})
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
@@ -581,6 +583,8 @@ class MCPBackendClient:
             raise MCPBackendError(f"backend transport error: {exc or exc.__class__.__name__}") from exc
 
         if response.status_code < 400:
+            duration_ms = int((time.monotonic() - t0_req) * 1000)
+            logger.info("backend request success", extra={"method": method, "path": path, "duration_ms": duration_ms, "output_shape": {"status_code": response.status_code}})
             return response.json()
 
         detail = self._extract_error_detail(response)

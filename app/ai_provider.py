@@ -253,11 +253,11 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "embed http error",
-                extra={"status": exc.response.status_code, "duration_ms": int((time.monotonic() - t0) * 1000)},
+                extra={"status": exc.response.status_code, "duration_ms": int((time.monotonic() - t0) * 1000), "input_shape": {"text_len": len(text)}, "error_type": exc.__class__.__name__},
             )
             raise
         except httpx.TimeoutException:
-            logger.error("embed timeout", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
+            logger.error("embed timeout", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "input_shape": {"text_len": len(text)}, "error_type": "TimeoutException"})
             raise
         payload = response.json()
         embedding = payload["data"][0]["embedding"]
@@ -317,11 +317,11 @@ class StructuredLLMProvider(AIProvider):
                 temperature=None,
             )
             result = ExtractionResult.model_validate(content)
-            logger.debug("llm extract done", extra={"duration_ms": int((time.monotonic() - t0) * 1000)})
+            logger.debug("llm extract done", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "input_shape": {"language": language, "text_len": len(text), "tags": tags}, "output_shape": {"concepts": len(result.concepts), "claims": len(result.claims), "relations": len(result.relations)}})
             return self._sanitize_llm_extraction(result, text, tags)
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
-            logger.error("llm extract failed", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message})
+            logger.error("llm extract failed", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message, "error_type": exc.__class__.__name__, "error_message": message[:200]})
             raise ValueError(f"llm extraction failed: {message}") from exc
 
     async def vet_extraction(
@@ -384,7 +384,7 @@ class StructuredLLMProvider(AIProvider):
             message = str(exc).strip() or exc.__class__.__name__
             logger.error(
                 "llm vet_extraction failed",
-                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message},
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message, "error_type": exc.__class__.__name__, "error_message": message[:200]},
             )
             raise ValueError(f"llm extraction vetting failed: {message}") from exc
         finally:
@@ -656,14 +656,14 @@ class StructuredLLMProvider(AIProvider):
             result = GeneratedAdaptiveBlock.model_validate(content)
             logger.debug(
                 "llm generate_block done",
-                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "items_count": len(result.items)},
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "items_count": len(result.items), "input_shape": {"concept": concept_name, "dimension": target_dimension, "difficulty": difficulty, "question_types": question_types, "item_count": item_count}, "output_shape": {"items": len(result.items)}},
             )
             return result
         except (httpx.HTTPStatusError, httpx.TimeoutException, json.JSONDecodeError, KeyError, ValueError) as exc:
             message = str(exc).strip() or exc.__class__.__name__
             logger.error(
                 "llm generate_block failed, using stub fallback",
-                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message},
+                extra={"duration_ms": int((time.monotonic() - t0) * 1000), "error": message, "error_type": exc.__class__.__name__, "error_message": message[:200]},
             )
             return await self.fallback_provider.generate_adaptive_block(
                 evidence_units=evidence_units,

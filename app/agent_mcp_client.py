@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -82,6 +83,8 @@ class AgentMCPUpstreamClient:
         return True, {"status": "ready", "upstream_tool_count": len(names)}
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        t0_tool = time.monotonic()
+        logger.info("mcp tool start", extra={"tool_name": name, "input_shape": {"arg_keys": list((arguments or {}).keys())}})
         try:
             async with self._session() as session:
                 result = await session.call_tool(name, arguments or {})
@@ -112,6 +115,8 @@ class AgentMCPUpstreamClient:
             raise AgentMCPUpstreamError(f"invalid upstream response for tool: {name}") from exc
         if not isinstance(payload, dict):
             return {"value": payload}
+        duration_ms = int((time.monotonic() - t0_tool) * 1000)
+        logger.info("mcp tool success", extra={"tool_name": name, "duration_ms": duration_ms, "output_shape": {"result_keys": list(payload.keys())}})
         return payload
 
     async def add_knowledge_fragment(

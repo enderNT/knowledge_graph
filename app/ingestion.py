@@ -70,7 +70,7 @@ class IngestionService:
             return
 
         bind(run_id=job_id, step="start")
-        logger.info("job started", extra={"episode_id": episode.uid, "language": episode.language, "tags": episode.tags})
+        logger.info("job started", extra={"episode_id": episode.uid, "language": episode.language, "tags": episode.tags, "input_shape": {"episode_id": episode.uid, "language": episode.language, "tags_count": len(episode.tags), "text_len": len(episode.text)}})
         t0 = time.monotonic()
         await self.store.update_job(job_id, status="processing")
         try:
@@ -88,6 +88,7 @@ class IngestionService:
                     "concepts_count": len(extraction.concepts),
                     "claims_count": len(extraction.claims),
                     "relations_count": len(extraction.relations),
+                    "output_shape": {"domain": extraction.domain, "concepts": len(extraction.concepts), "claims": len(extraction.claims), "relations": len(extraction.relations)},
                 },
             )
 
@@ -110,6 +111,7 @@ class IngestionService:
                     "concepts_kept": len(extraction.concepts),
                     "claims_kept": len(extraction.claims),
                     "relations_kept": len(extraction.relations),
+                    "output_shape": {"concepts_kept": len(extraction.concepts), "claims_kept": len(extraction.claims), "relations_kept": len(extraction.relations)},
                 },
             )
 
@@ -182,6 +184,7 @@ class IngestionService:
                     "n_created": len(summary.created_concepts),
                     "n_updated": len(summary.updated_concepts),
                     "needs_review": len(summary.needs_review),
+                    "output_shape": {"created": len(summary.created_concepts), "updated": len(summary.updated_concepts), "needs_review": len(summary.needs_review)},
                 },
             )
 
@@ -299,6 +302,7 @@ class IngestionService:
                     "relations": len(summary.relations),
                     "needs_review": len(summary.needs_review),
                     "domain": summary.domain,
+                    "output_shape": {"created_concepts": len(summary.created_concepts), "updated_concepts": len(summary.updated_concepts), "created_claims": summary.created_claims, "relations": len(summary.relations), "needs_review": len(summary.needs_review)},
                 },
             )
         except Exception as exc:
@@ -307,7 +311,7 @@ class IngestionService:
             bind(step="failed")
             logger.error(
                 "job failed",
-                extra={"duration_ms": elapsed_ms, "error": error_message},
+                extra={"duration_ms": elapsed_ms, "error": error_message, "error_type": exc.__class__.__name__, "error_message": error_message[:200]},
                 exc_info=True,
             )
             await self.store.update_episode(episode.uid, status="failed", error_message=error_message)

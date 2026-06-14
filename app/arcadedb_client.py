@@ -10,12 +10,25 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def _raise_for_status(response: httpx.Response, *, operation: str, command: str | None = None) -> None:
+def _raise_for_status(
+    response: httpx.Response,
+    *,
+    operation: str,
+    command: str | None = None,
+    ignore_if: str | None = None,
+) -> None:
     """raise_for_status, but log the ArcadeDB error body first so DB-level
-    failures (constraint violations, syntax errors) are not opaque."""
+    failures (constraint violations, syntax errors) are not opaque.
+
+    If `ignore_if` is set and that substring appears in the error body,
+    the error is silently swallowed (used for idempotent schema bootstrap).
+    """
     if response.status_code < 400:
         return
     body = (response.text or "").strip()
+    if ignore_if and ignore_if in body:
+        response.raise_for_status()
+        return
     logger.error(
         "arcadedb error",
         extra={
@@ -74,6 +87,19 @@ class ArcadeDBClient:
         )
         _raise_for_status(response, operation="command", command=command)
         return response.json().get("result", [])
+
+    async def command_idempotent(self, command: str, params: dict[str, Any] | None = None, language: str = "sql") -> list[dict[str, Any]]:
+        """Like command(), but silences 'already exists' errors without logging them."""
+        response = await self.client.post(
+            f"api/v1/command/{self._database}",
+            json={"language": language, "command": command, "params": params or {}},
+            headers={"Content-Type": "application/json"},
+        )
+        _raise_for_status(response, operation="command", command=command, ignore_if="already exists")
+        try:
+            return response.json().get("result", [])
+        except Exception:
+            return []
 
     async def close(self) -> None:
         await self.client.aclose()

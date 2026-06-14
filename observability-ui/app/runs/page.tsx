@@ -28,12 +28,20 @@ export default function RunsPage() {
   const [skip, setSkip] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
+  // draft state — what the user is typing (doesn't trigger search)
+  const [draftJobId, setDraftJobId] = useState("");
+  const [draftSessionId, setDraftSessionId] = useState("");
+  const [draftEpisodeId, setDraftEpisodeId] = useState("");
+  const [draftSince, setDraftSince] = useState("");
+  const [draftUntil, setDraftUntil] = useState("");
+
+  // applied state — triggers actual search (set on button click or sort change)
   const [sort, setSort] = useState("desc");
-  const [jobId, setJobId] = useState("");
-  const [sessionId, setSessionId] = useState("");
-  const [episodeId, setEpisodeId] = useState("");
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
+  const [appliedJobId, setAppliedJobId] = useState("");
+  const [appliedSessionId, setAppliedSessionId] = useState("");
+  const [appliedEpisodeId, setAppliedEpisodeId] = useState("");
+  const [appliedSince, setAppliedSince] = useState("");
+  const [appliedUntil, setAppliedUntil] = useState("");
 
   const load = useCallback(
     async (s: number) => {
@@ -43,11 +51,11 @@ export default function RunsPage() {
           sort,
           limit: LIMIT,
           skip: s,
-          job_id: jobId || undefined,
-          session_id: sessionId || undefined,
-          episode_id: episodeId || undefined,
-          since: since || undefined,
-          until: until || undefined,
+          job_id: appliedJobId || undefined,
+          session_id: appliedSessionId || undefined,
+          episode_id: appliedEpisodeId || undefined,
+          since: appliedSince || undefined,
+          until: appliedUntil || undefined,
         });
         setRuns(data.runs ?? []);
         setHasMore((data.runs ?? []).length === LIMIT);
@@ -57,13 +65,33 @@ export default function RunsPage() {
         setLoading(false);
       }
     },
-    [sort, jobId, sessionId, episodeId, since, until],
+    [sort, appliedJobId, appliedSessionId, appliedEpisodeId, appliedSince, appliedUntil],
   );
 
   useEffect(() => {
     setSkip(0);
     load(0);
   }, [load]);
+
+  function applyFilters() {
+    setAppliedJobId(draftJobId);
+    setAppliedSessionId(draftSessionId);
+    setAppliedEpisodeId(draftEpisodeId);
+    setAppliedSince(draftSince);
+    setAppliedUntil(draftUntil);
+    setSkip(0);
+  }
+
+  function clearFilters() {
+    setDraftJobId(""); setDraftSessionId(""); setDraftEpisodeId(""); setDraftSince(""); setDraftUntil("");
+    setAppliedJobId(""); setAppliedSessionId(""); setAppliedEpisodeId(""); setAppliedSince(""); setAppliedUntil("");
+    setSort("desc");
+    setSkip(0);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") applyFilters();
+  }
 
   function prev() {
     const n = Math.max(0, skip - LIMIT);
@@ -76,6 +104,8 @@ export default function RunsPage() {
     setSkip(n);
     load(n);
   }
+
+  const hasActiveFilters = appliedJobId || appliedSessionId || appliedEpisodeId || appliedSince || appliedUntil;
 
   return (
     <Container>
@@ -103,34 +133,82 @@ export default function RunsPage() {
 
             <div>
               <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Job ID</label>
-              <input type="text" value={jobId} onChange={(e) => setJobId(e.target.value)} placeholder="job-…" />
+              <input
+                type="text"
+                value={draftJobId}
+                onChange={(e) => setDraftJobId(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="job-…"
+              />
             </div>
 
             <div>
               <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Session ID</label>
-              <input type="text" value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="ads-…" />
+              <input
+                type="text"
+                value={draftSessionId}
+                onChange={(e) => setDraftSessionId(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="ads-…"
+              />
             </div>
 
             <div>
               <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Episode ID</label>
-              <input type="text" value={episodeId} onChange={(e) => setEpisodeId(e.target.value)} placeholder="ep-…" />
+              <input
+                type="text"
+                value={draftEpisodeId}
+                onChange={(e) => setDraftEpisodeId(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="ep-…"
+              />
             </div>
 
             <div>
               <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Since</label>
-              <input type="text" value={since} onChange={(e) => setSince(e.target.value)} placeholder="2025-01-01T00:00" />
+              <input
+                type="text"
+                value={draftSince}
+                onChange={(e) => setDraftSince(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="2025-01-01T00:00"
+              />
             </div>
 
             <div>
               <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>Until</label>
-              <input type="text" value={until} onChange={(e) => setUntil(e.target.value)} placeholder="2025-12-31T23:59" />
+              <input
+                type="text"
+                value={draftUntil}
+                onChange={(e) => setDraftUntil(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="2025-12-31T23:59"
+              />
             </div>
 
             <button
-              className="btn-ghost"
-              onClick={() => {
-                setJobId(""); setSessionId(""); setEpisodeId(""); setSince(""); setUntil(""); setSort("desc");
+              onClick={applyFilters}
+              style={{
+                background: "var(--text-primary, #111)",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                padding: "8px 14px",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                transition: "opacity 0.15s",
               }}
+              onMouseOver={(e) => (e.currentTarget.style.opacity = "0.85")}
+              onMouseOut={(e) => (e.currentTarget.style.opacity = "1")}
+            >
+              Search
+            </button>
+
+            <button
+              className="btn-ghost"
+              onClick={clearFilters}
+              style={{ opacity: hasActiveFilters || draftJobId || draftSessionId || draftEpisodeId || draftSince || draftUntil ? 1 : 0.45 }}
             >
               Clear
             </button>
@@ -139,6 +217,27 @@ export default function RunsPage() {
 
         {/* Results table */}
         <div className="animate-enter animate-enter-delay-2">
+          {hasActiveFilters && (
+            <div style={{
+              marginBottom: 12,
+              padding: "6px 12px",
+              background: "#E1F3FE",
+              borderRadius: 6,
+              fontSize: 12,
+              color: "#1F6C9F",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}>
+              <span style={{ fontWeight: 600 }}>Filtered</span>
+              {appliedJobId && <span>job: <code style={{ fontFamily: "monospace" }}>{appliedJobId}</code></span>}
+              {appliedSessionId && <span>session: <code style={{ fontFamily: "monospace" }}>{appliedSessionId}</code></span>}
+              {appliedEpisodeId && <span>episode: <code style={{ fontFamily: "monospace" }}>{appliedEpisodeId}</code></span>}
+              {appliedSince && <span>since: {appliedSince}</span>}
+              {appliedUntil && <span>until: {appliedUntil}</span>}
+            </div>
+          )}
+
           <div className="card" style={{ overflow: "hidden" }}>
             <table>
               <thead>

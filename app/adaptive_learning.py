@@ -126,7 +126,7 @@ class AdaptiveLearningService:
         t0 = time.monotonic()
         logger.info(
             "adaptive session starting",
-            extra={"user_id": payload.user_id, "study_mode": payload.study_mode, "domain_hint": payload.domain_hint},
+            extra={"user_id": payload.user_id, "study_mode": payload.study_mode, "domain_hint": payload.domain_hint, "input_shape": {"user_id": payload.user_id, "study_mode": payload.study_mode, "domain_hint": payload.domain_hint, "language": payload.language, "max_blocks": payload.constraints.max_blocks}},
         )
         tutor_context = await self._resolve_tutor_context(payload)
         pedagogical_context = await self._store.get_pedagogical_context(user_id=payload.user_id)
@@ -203,6 +203,7 @@ class AdaptiveLearningService:
                 "block_id": block.block_id,
                 "target_concept": block.plan.target_concept_name,
                 "duration_ms": int((time.monotonic() - t0) * 1000),
+                "output_shape": {"session_id": session.session_id, "block_id": block.block_id, "target_concept": block.plan.target_concept_name, "block_purpose": block.plan.block_purpose},
             },
         )
         return AdaptiveSessionStartResponse(
@@ -228,7 +229,7 @@ class AdaptiveLearningService:
         t0 = time.monotonic()
         logger.info(
             "block submission received",
-            extra={"session_id": session_id, "block_id": payload.block_id, "items_count": len(payload.submissions)},
+            extra={"session_id": session_id, "block_id": payload.block_id, "items_count": len(payload.submissions), "input_shape": {"session_id": session_id, "block_id": payload.block_id, "items_count": len(payload.submissions)}},
         )
         session = await self.get_session(session_id)
         current_block = session.current_block
@@ -407,6 +408,8 @@ class AdaptiveLearningService:
                 "session_closed": session_closed,
                 "completed_blocks": updated_session.summary.completed_blocks,
                 "duration_ms": int((time.monotonic() - t0) * 1000),
+                "output_shape": {"verdict": block_verdict, "score": block_score, "session_status": updated_session.status, "completed_blocks": updated_session.summary.completed_blocks},
+                "counts": {"item_results": len(item_results)},
             },
         )
         return AdaptiveBlockSubmissionResponse(
@@ -811,6 +814,8 @@ class AdaptiveLearningService:
                 "block_id": block_id,
                 "items_generated": len(llm_block.items),
                 "duration_ms": int((time.monotonic() - t0) * 1000),
+                "input_shape": {"concept": concept_state.concept_name, "dimension": decision.primary_dimension, "difficulty": decision.difficulty, "question_types": [qt for qt in decision.question_types], "item_count": item_count},
+                "output_shape": {"items": len(llm_block.items)},
             },
         )
 
