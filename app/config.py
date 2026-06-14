@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     arcadedb_url: str = Field(default="http://arcadedb:2480", alias="ARCADEDB_URL")
     arcadedb_database: str = Field(default="knowledge", alias="ARCADEDB_DATABASE")
+    arcadedb_observability_database: str = Field(default="observability", alias="ARCADEDB_OBSERVABILITY_DATABASE")
     arcadedb_root_username: str = Field(default="root", alias="ARCADEDB_ROOT_USERNAME")
     arcadedb_root_password: str = Field(default="change-me-please", alias="ARCADEDB_ROOT_PASSWORD")
 

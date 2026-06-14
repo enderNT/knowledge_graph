@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2055" height="1700" viewBox="0 -10 2055 1700"><defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#334155"/></marker></defs><rect x="0" y="-10" width="100%" height="100%" fill="#fff"/>
+<text x="40" y="58" font-family="monospace" font-size="28" fill="#111827" text-anchor="start">Viaje de datos MCP -&gt; app -&gt; respuesta, visto como timeline de logs</text>
+<ellipse cx="59" cy="99" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="61" y="103" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="78" y="103" font-family="monospace" font-size="15" fill="#374151" text-anchor="start">E = log existente; JsonFormatter con run_id/step</text>
+<ellipse cx="429" cy="99" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="431" y="103" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="448" y="103" font-family="monospace" font-size="15" fill="#374151" text-anchor="start">P = log propuesto; ayuda a ver viaje de datos</text>
+<rect x="40" y="130" width="1510" height="80" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="2" stroke-dasharray=""/>
+<text x="54" y="156" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Contexto comun: app/logging_config.py:18 JsonFormatter -&gt; ts, level, logger, run_id, step, extras.</text>
+<text x="54" y="172.8" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">app/trace.py:17 bind() une request_id, job_id o session_id con cada evento visualizable.</text>
+<rect x="40" y="250" width="1510" height="520" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="2" stroke-dasharray=""/>
+<text x="60" y="288" font-family="monospace" font-size="23" fill="#1e3a8a" text-anchor="start">Flujo 1: ingesta nueva informacion via MCP</text>
+<rect x="60" y="315" width="270" height="150" rx="8" fill="#0f172a" stroke="#020617" stroke-width="2" stroke-dasharray=""/>
+<text x="76" y="343" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">MCP input</text>
+<text x="76" y="359.8" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">kg_add_knowledge_fragment({</text>
+<text x="76" y="376.6" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  text, source_type, tags,</text>
+<text x="76" y="393.40000000000003" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  language, temporal, expires_at</text>
+<text x="76" y="410.20000000000005" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">})</text>
+<rect x="380" y="315" width="230" height="105" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="2" stroke-dasharray=""/>
+<text x="394" y="342" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P agent_mcp_server.py:360</text>
+<text x="394" y="360" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">kg_add_knowledge_fragment</text>
+<text x="394" y="378" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">entrada/salida tool</text>
+<text x="394" y="396" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E error: translate_error 297</text>
+<rect x="660" y="315" width="235" height="105" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2" stroke-dasharray=""/>
+<text x="674" y="342" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E agent_mcp_client.py:84</text>
+<text x="674" y="360" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">call_tool(add_knowledge_fragment)</text>
+<text x="674" y="378" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E transport/session fail</text>
+<text x="674" y="396" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P payload sin text completo</text>
+<rect x="945" y="315" width="230" height="105" rx="8" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2" stroke-dasharray=""/>
+<text x="959" y="342" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P mcp_server.py:290</text>
+<text x="959" y="360" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">add_knowledge_fragment</text>
+<text x="959" y="378" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P tool start/success</text>
+<text x="959" y="396" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E backend error 287</text>
+<rect x="1225" y="315" width="250" height="105" rx="8" fill="#e0f2fe" stroke="#0369a1" stroke-width="2" stroke-dasharray=""/>
+<text x="1239" y="340" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">P mcp_backend_client.py:526</text>
+<text x="1239" y="355.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">ingest_fragment_and_wait</text>
+<text x="1239" y="371.20000000000005" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">POST /v1/knowledge/fragments</text>
+<text x="1239" y="386.80000000000007" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">poll GET /v1/jobs/{job_id}</text>
+<polyline points="330,390 380,390" fill="none" stroke="#2563eb" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="610,390 660,390" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="895,390 945,390" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="1175,390 1225,390" fill="none" stroke="#0369a1" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="190,535 1410,535" fill="none" stroke="#475569" stroke-width="3" stroke-dasharray="" marker-end=""/>
+<ellipse cx="179" cy="535" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="181" y="539" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="190" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P REST route</text>
+<text x="190" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">accepted/rejected</text>
+<polyline points="188,535 334,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="349" cy="535" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="351" y="539" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="360" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E fragment queued</text>
+<text x="360" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">episode_id + job_id</text>
+<polyline points="358,535 504,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="519" cy="535" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="521" y="539" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="530" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P Episode + Job</text>
+<text x="530" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">persisted</text>
+<polyline points="528,535 674,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="689" cy="535" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="691" y="539" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="700" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P worker dequeue</text>
+<text x="700" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">queue_wait_ms</text>
+<polyline points="698,535 844,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="859" cy="535" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="861" y="539" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="870" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E job started</text>
+<text x="870" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">run_id=job_id</text>
+<polyline points="868,535 1014,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="1029" cy="535" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="1031" y="539" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="1040" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E AI extract/vet</text>
+<text x="1040" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">counts duration</text>
+<polyline points="1038,535 1184,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="1199" cy="535" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="1201" y="539" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="1210" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E/P graph writes</text>
+<text x="1210" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">concepts claims</text>
+<polyline points="1208,535 1354,535" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="1369" cy="535" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="1371" y="539" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="1380" y="578" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E completed/failed</text>
+<text x="1380" y="593.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">result error</text>
+<rect x="1215" y="640" width="310" height="105" rx="8" fill="#0f172a" stroke="#020617" stroke-width="2" stroke-dasharray=""/>
+<text x="1231" y="668" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">MCP response</text>
+<text x="1231" y="684.8" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">{ status, episode_id, job_id,</text>
+<text x="1231" y="701.5999999999999" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  result | error }</text>
+<text x="1231" y="718.3999999999999" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">status: completed|failed|processing</text>
+<polyline points="1370,640 1370,610 190,610 190,465 60,465" fill="none" stroke="#0f766e" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<text x="70" y="489" font-family="monospace" font-size="14" fill="#0f766e" text-anchor="start">Respuesta vuelve por REST -&gt; knowledge MCP -&gt; agent MCP -&gt; cliente</text>
+<rect x="40" y="835" width="1510" height="620" rx="8" fill="#fff1f2" stroke="#be123c" stroke-width="2" stroke-dasharray=""/>
+<text x="60" y="873" font-family="monospace" font-size="23" fill="#881337" text-anchor="start">Flujo 2: sesion adaptativa via MCP, start + submit + get</text>
+<rect x="60" y="900" width="290" height="170" rx="8" fill="#0f172a" stroke="#020617" stroke-width="2" stroke-dasharray=""/>
+<text x="76" y="928" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">MCP input</text>
+<text x="76" y="944.8" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">start_adaptive_session({</text>
+<text x="76" y="961.5999999999999" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  user_id, query|episode_id|job_id,</text>
+<text x="76" y="978.3999999999999" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  study_mode, constraints</text>
+<text x="76" y="995.1999999999998" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">})</text>
+<text x="76" y="1011.9999999999998" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start"></text>
+<text x="76" y="1028.7999999999997" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">submit_adaptive_block({</text>
+<text x="76" y="1045.5999999999997" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  session_id, block_id, submissions,</text>
+<text x="76" y="1062.3999999999996" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  interaction_events</text>
+<text x="76" y="1079.1999999999996" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">})</text>
+<rect x="400" y="900" width="230" height="122" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="2" stroke-dasharray=""/>
+<text x="414" y="927" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P agent_mcp_server.py:772/798</text>
+<text x="414" y="945" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">start_adaptive_session</text>
+<text x="414" y="963" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">submit_adaptive_block</text>
+<text x="414" y="981" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">get_adaptive_session</text>
+<text x="414" y="999" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E upstream error 297</text>
+<rect x="680" y="900" width="235" height="122" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2" stroke-dasharray=""/>
+<text x="694" y="927" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E agent_mcp_client.py:84</text>
+<text x="694" y="945" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">call_tool(start/submit/get)</text>
+<text x="694" y="963" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P submission_count</text>
+<text x="694" y="981" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E transport/session fail</text>
+<rect x="965" y="900" width="230" height="122" rx="8" fill="#e0e7ff" stroke="#4f46e5" stroke-width="2" stroke-dasharray=""/>
+<text x="979" y="927" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P mcp_server.py:696/722/740</text>
+<text x="979" y="945" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">knowledge MCP tools</text>
+<text x="979" y="963" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">P success logs</text>
+<text x="979" y="981" font-family="monospace" font-size="15" fill="#111827" text-anchor="start">E backend error 287</text>
+<rect x="1245" y="900" width="260" height="122" rx="8" fill="#e0f2fe" stroke="#0369a1" stroke-width="2" stroke-dasharray=""/>
+<text x="1259" y="925" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">P mcp_backend_client.py:</text>
+<text x="1259" y="940.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">362 / 389 / 407</text>
+<text x="1259" y="956.2" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">POST /v1/adaptive/sessions/start</text>
+<text x="1259" y="971.8000000000001" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">POST /submit</text>
+<text x="1259" y="987.4000000000001" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">GET /sessions/{id}</text>
+<polyline points="350,980 400,980" fill="none" stroke="#be123c" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="630,980 680,980" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="915,980 965,980" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="1195,980 1245,980" fill="none" stroke="#0369a1" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<rect x="170" y="1075" width="1215" height="235" rx="8" fill="#ffe4e6" stroke="#9f1239" stroke-width="2" stroke-dasharray=""/>
+<text x="184" y="1103" font-family="monospace" font-size="16" fill="#111827" text-anchor="start">AdaptiveLearningService subflujos: app/adaptive_learning.py</text>
+<polyline points="225,1150 1305,1150" fill="none" stroke="#9f1239" stroke-width="3" stroke-dasharray="" marker-end=""/>
+<ellipse cx="234" cy="1150" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="236" y="1154" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="231" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E start_session</text>
+<text x="231" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">starting</text>
+<polyline points="243,1150 384,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="399" cy="1150" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="401" y="1154" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="396" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P tutor_context</text>
+<text x="396" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">anchor -&gt; evidence</text>
+<polyline points="408,1150 549,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="564" cy="1150" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="566" y="1154" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="561" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P SR candidates</text>
+<text x="561" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">due/recovery</text>
+<polyline points="573,1150 714,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="729" cy="1150" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="731" y="1154" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="726" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P plan_block</text>
+<text x="726" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">concept dimension</text>
+<polyline points="738,1150 879,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="894" cy="1150" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="896" y="1154" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="891" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E generate_block</text>
+<text x="891" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">LLM/fallback</text>
+<polyline points="903,1150 1044,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="1059" cy="1150" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="1061" y="1154" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="1056" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">P persist session</text>
+<text x="1056" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">+ attempt</text>
+<polyline points="1068,1150 1209,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="1224" cy="1150" rx="9" ry="9" fill="#ccfbf1" stroke="#0f766e" stroke-width="2"/>
+<text x="1226" y="1154" font-family="monospace" font-size="12" fill="#0f766e" text-anchor="middle">E</text>
+<text x="1221" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E created</text>
+<text x="1221" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">session block</text>
+<polyline points="1233,1150 1299,1150" fill="none" stroke="#9f1239" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<ellipse cx="1314" cy="1150" rx="9" ry="9" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+<text x="1316" y="1154" font-family="monospace" font-size="12" fill="#b45309" text-anchor="middle">P</text>
+<text x="1311" y="1193" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">E submit complete</text>
+<text x="1311" y="1208.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="middle">score verdict</text>
+<rect x="170" y="1325" width="585" height="100" rx="8" fill="#ffe4e6" stroke="#9f1239" stroke-width="2" stroke-dasharray=""/>
+<text x="184" y="1351" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Submit subflujo P/E:</text>
+<text x="184" y="1367.8" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">evaluate_item -&gt; SR update_from_block_result -&gt; apply_prereq_relief</text>
+<text x="184" y="1384.6" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">_upsert_state_from_block -&gt; _build_next_block o cerrar sesion</text>
+<text x="184" y="1401.3999999999999" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Huecos utiles: item_result, quality_q, interval_delta, propagation_count.</text>
+<rect x="800" y="1325" width="585" height="100" rx="8" fill="#dcfce7" stroke="#166534" stroke-width="2" stroke-dasharray=""/>
+<text x="814" y="1350" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">Persistencia:</text>
+<text x="814" y="1365.6" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">store.py:1701 get session</text>
+<text x="814" y="1381.1999999999998" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">store.py:1740 upsert session</text>
+<text x="814" y="1396.7999999999997" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">store.py:1790 append attempt</text>
+<text x="814" y="1412.3999999999996" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">P logs: session_found, attempt_upserted,</text>
+<text x="814" y="1427.9999999999995" font-family="monospace" font-size="13" fill="#111827" text-anchor="start">old_status-&gt;new_status, block_history_len.</text>
+<rect x="1200" y="1125" width="325" height="150" rx="8" fill="#0f172a" stroke="#020617" stroke-width="2" stroke-dasharray=""/>
+<text x="1216" y="1153" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">MCP response start</text>
+<text x="1216" y="1169.8" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">{ session, current_block,</text>
+<text x="1216" y="1186.6" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  planner_explanation, grounding_status }</text>
+<text x="1216" y="1203.3999999999999" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start"></text>
+<text x="1216" y="1220.1999999999998" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">MCP response submit</text>
+<text x="1216" y="1236.9999999999998" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">{ block_result, updated_context,</text>
+<text x="1216" y="1253.7999999999997" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  next_action, next_block, session_closed }</text>
+<polyline points="1365,1275 1365,1445 190,1445 190,1085 60,1085" fill="none" stroke="#be123c" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<text x="70" y="1109" font-family="monospace" font-size="14" fill="#be123c" text-anchor="start">Respuesta vuelve por API -&gt; knowledge MCP -&gt; agent MCP -&gt; cliente</text>
+<rect x="1590" y="250" width="405" height="1205" rx="8" fill="#fffbeb" stroke="#b45309" stroke-width="2" stroke-dasharray=""/>
+<text x="1604" y="280" font-family="monospace" font-size="18" fill="#111827" text-anchor="start">Visualizacion basada en logs</text>
+<text x="1615" y="307" font-family="monospace" font-size="22" fill="#78350f" text-anchor="start">Logger -&gt; mapa vivo</text>
+<rect x="1620" y="335" width="345" height="190" rx="8" fill="#0f172a" stroke="#020617" stroke-width="2" stroke-dasharray=""/>
+<text x="1636" y="363" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">LogEvent normalizado</text>
+<text x="1636" y="379.8" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">{</text>
+<text x="1636" y="396.6" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  ts, level, service, logger,</text>
+<text x="1636" y="413.40000000000003" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  run_id: job_id | session_id | req_id,</text>
+<text x="1636" y="430.20000000000005" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  step, event, duration_ms,</text>
+<text x="1636" y="447.00000000000006" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  tool_name, path, status,</text>
+<text x="1636" y="463.80000000000007" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">  input_shape, output_shape</text>
+<text x="1636" y="480.6000000000001" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">}</text>
+<rect x="1620" y="560" width="345" height="250" rx="8" fill="#ccfbf1" stroke="#0f766e" stroke-width="2" stroke-dasharray=""/>
+<text x="1634" y="586" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Timeline ingesta UI</text>
+<text x="1634" y="602.8" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">1 tool_called P</text>
+<text x="1634" y="619.5999999999999" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">2 fragment queued E</text>
+<text x="1634" y="636.3999999999999" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">3 job_dequeued P</text>
+<text x="1634" y="653.1999999999998" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">4 embed/extract/vet E</text>
+<text x="1634" y="669.9999999999998" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">5 graph writes E/P</text>
+<text x="1634" y="686.7999999999997" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">6 poll status P</text>
+<text x="1634" y="703.5999999999997" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">7 completed/failed E</text>
+<text x="1634" y="720.3999999999996" font-family="monospace" font-size="14" fill="#111827" text-anchor="start"></text>
+<text x="1634" y="737.1999999999996" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Clave: run_id = job_id</text>
+<rect x="1620" y="850" width="345" height="300" rx="8" fill="#ffe4e6" stroke="#be123c" stroke-width="2" stroke-dasharray=""/>
+<text x="1634" y="876" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Timeline adaptive UI</text>
+<text x="1634" y="892.8" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">1 tool_called P</text>
+<text x="1634" y="909.5999999999999" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">2 route /v1/adaptive P</text>
+<text x="1634" y="926.3999999999999" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">3 adaptive session starting E</text>
+<text x="1634" y="943.1999999999998" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">4 tutor_context_resolved P</text>
+<text x="1634" y="959.9999999999998" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">5 planner_decision P</text>
+<text x="1634" y="976.7999999999997" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">6 llm block generation E</text>
+<text x="1634" y="993.5999999999997" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">7 session persisted P</text>
+<text x="1634" y="1010.3999999999996" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">8 block submission received E</text>
+<text x="1634" y="1027.1999999999996" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">9 SR quality/interval P</text>
+<text x="1634" y="1043.9999999999995" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">10 complete E</text>
+<text x="1634" y="1060.7999999999995" font-family="monospace" font-size="14" fill="#111827" text-anchor="start"></text>
+<text x="1634" y="1077.5999999999995" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Clave: run_id = session_id</text>
+<rect x="1620" y="1190" width="345" height="210" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2" stroke-dasharray=""/>
+<text x="1634" y="1216" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Donde falta logging que mas ayuda</text>
+<text x="1634" y="1232.8" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">P tool start/success en MCP boundaries</text>
+<text x="1634" y="1249.6" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">P route latency/status en routers</text>
+<text x="1634" y="1266.3999999999999" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">P status transitions en store.update_job</text>
+<text x="1634" y="1283.1999999999998" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">P planner decision y SR deltas</text>
+<text x="1634" y="1299.9999999999998" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">P query/command duration en ArcadeDB</text>
+<text x="1634" y="1316.7999999999997" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">P response shape antes de volver al cliente</text>
+<polyline points="1495,520 1560,520 1560,645 1620,645" fill="none" stroke="#b45309" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="1505,1050 1560,1050 1560,1000 1620,1000" fill="none" stroke="#b45309" stroke-width="2" stroke-dasharray="" marker-end="url(#arrow)"/>
+<polyline points="785,210 1560,210 1560,430 1620,430" fill="none" stroke="#b45309" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
+<rect x="40" y="1500" width="1510" height="130" rx="8" fill="#f8fafc" stroke="#334155" stroke-width="2" stroke-dasharray=""/>
+<text x="54" y="1526" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Lectura:</text>
+<text x="54" y="1542.8" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">flechas gruesas = datos de negocio; panel derecho = mismos eventos como logs.</text>
+<text x="54" y="1559.6" font-family="monospace" font-size="14" fill="#111827" text-anchor="start">Verde E ya existe. Ambar P es logging propuesto solo dentro del diagrama, sin modificar codigo.</text>
+<rect x="1590" y="1500" width="405" height="130" rx="8" fill="#0f172a" stroke="#020617" stroke-width="2" stroke-dasharray=""/>
+<text x="1606" y="1528" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">Ejemplo filtro UI</text>
+<text x="1606" y="1544.8" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">GET /v1/logs?run_id=job_...</text>
+<text x="1606" y="1561.6" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">GET /v1/logs?run_id=ads_...</text>
+<text x="1606" y="1578.3999999999999" font-family="monospace" font-size="14" fill="#e2e8f0" text-anchor="start">GET /v1/logs/stream?service=agent-mcp</text>
+</svg>

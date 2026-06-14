@@ -17,6 +17,7 @@ from app.arcadedb_client import ArcadeDBClient
 from app.config import Settings, get_settings
 from app.ingestion import IngestionService
 from app.logging_config import setup_logging
+from app.observability import ObservabilityService
 from app.store import ArcadeKnowledgeStore, InMemoryKnowledgeStore, KnowledgeStore
 from app.trace import bind, clear
 from app.worker import IngestionWorker
@@ -33,6 +34,7 @@ class AppServices:
     worker: IngestionWorker
     queue: asyncio.Queue[str]
     arcade_client: ArcadeDBClient | None = None
+    obs_service: ObservabilityService | None = None
     bootstrap_error: str | None = None
     bootstrap_complete: bool = False
     bootstrap_task: asyncio.Task[None] | None = None
@@ -74,6 +76,8 @@ def create_app(
         logger.info("app starting", extra={"env": settings.app_env, "ai_provider": settings.ai_provider})
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=settings.queue_maxsize)
         arcade_client = None
+        obs_arcade_client = None
+        obs_service = None
         actual_store = store
         if actual_store is None:
             arcade_client = ArcadeDBClient(settings)
@@ -86,6 +90,20 @@ def create_app(
             queue=queue,
         )
         worker = IngestionWorker(queue, ingestion_service)
+
+        # boot observability (best-effort — never blocks main startup)
+        try:
+            from app.logging_obs_handler import ObservabilityLogHandler
+            from app.schema_bootstrap_observability import ensure_observability_schema
+            obs_arcade_client = ArcadeDBClient(settings, database=settings.arcadedb_observability_database)
+            await ensure_observability_schema(obs_arcade_client)
+            obs_service = ObservabilityService(obs_arcade_client)
+            obs_service.start()
+            logging.getLogger().addHandler(ObservabilityLogHandler(obs_service))
+            logger.info("observability ready")
+        except Exception as exc:
+            logger.warning("observability bootstrap failed", extra={"error": str(exc)})
+
         app.state.services = AppServices(
             settings=settings,
             store=actual_store,
@@ -94,6 +112,7 @@ def create_app(
             worker=worker,
             queue=queue,
             arcade_client=arcade_client,
+            obs_service=obs_service,
         )
         if arcade_client is None:
             await bootstrap_with_retry(app.state.services)
@@ -109,6 +128,8 @@ def create_app(
         finally:
             logger.info("app shutting down")
             await worker.stop()
+            if obs_service:
+                await obs_service.stop()
             if app.state.services.bootstrap_task:
                 app.state.services.bootstrap_task.cancel()
                 try:
@@ -117,6 +138,8 @@ def create_app(
                     pass
             if arcade_client:
                 await arcade_client.close()
+            if obs_arcade_client:
+                await obs_arcade_client.close()
             await actual_ai_provider.close()
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -144,7 +167,7 @@ def create_app(
         response.headers["x-request-id"] = req_id
         return response
 
-    from app.routers import adaptive, concepts, deletions, episodes, health, jobs, knowledge, pedagogical, search, sr
+    from app.routers import adaptive, concepts, deletions, episodes, health, jobs, knowledge, observability, pedagogical, search, sr
 
     app.include_router(health.router)
     app.include_router(knowledge.router)
@@ -156,5 +179,6 @@ def create_app(
     app.include_router(pedagogical.router)
     app.include_router(sr.router)
     app.include_router(adaptive.router)
+    app.include_router(observability.router)
     return app
 app = create_app()

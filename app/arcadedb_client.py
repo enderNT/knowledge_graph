@@ -29,8 +29,9 @@ def _raise_for_status(response: httpx.Response, *, operation: str, command: str 
 
 
 class ArcadeDBClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, database: str | None = None) -> None:
         self.settings = settings
+        self._database = database or settings.arcadedb_database
         self.client = httpx.AsyncClient(
             base_url=settings.arcadedb_url.rstrip("/") + "/",
             auth=(settings.arcadedb_root_username, settings.arcadedb_root_password),
@@ -51,14 +52,14 @@ class ArcadeDBClient:
         return response.json().get("result")
 
     async def database_exists(self, database: str | None = None) -> bool:
-        name = database or self.settings.arcadedb_database
+        name = database or self._database
         response = await self.client.get(f"api/v1/exists/{name}")
         _raise_for_status(response, operation="database_exists", command=name)
         return bool(response.json()["result"])
 
     async def query(self, command: str, params: dict[str, Any] | None = None, language: str = "sql") -> list[dict[str, Any]]:
         response = await self.client.post(
-            f"api/v1/query/{self.settings.arcadedb_database}",
+            f"api/v1/query/{self._database}",
             json={"language": language, "command": command, "params": params or {}},
             headers={"Content-Type": "application/json"},
         )
@@ -67,7 +68,7 @@ class ArcadeDBClient:
 
     async def command(self, command: str, params: dict[str, Any] | None = None, language: str = "sql") -> list[dict[str, Any]]:
         response = await self.client.post(
-            f"api/v1/command/{self.settings.arcadedb_database}",
+            f"api/v1/command/{self._database}",
             json={"language": language, "command": command, "params": params or {}},
             headers={"Content-Type": "application/json"},
         )

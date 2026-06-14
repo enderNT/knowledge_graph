@@ -25,6 +25,12 @@
       "skillPath": "SKILL.md",
       "computedHash": "b8f0bc6685a0dfa63460471567751dc4edf6521616b42e14238d2653a91ce796"
     },
+    "minimalist-ui": {
+      "source": "leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/minimalist-skill/SKILL.md",
+      "computedHash": "08873a3131d3be27bef9bf3304b310b16b44ca6e3561aebe532797be3443f6bd"
+    },
     "remotion-best-practices": {
       "source": "remotion-dev/skills",
       "sourceType": "github",
