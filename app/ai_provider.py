@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import time
@@ -25,6 +26,16 @@ from app.trace_models import TraceBoundaryPayload
 from app.utils import dedupe_preserve_order, fit_embedding_dimensions, normalize_text, stable_embedding
 
 logger = logging.getLogger(__name__)
+
+
+def _embedding_metadata(*, provider: str, model: str, text: str, dimensions: int) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "model": model,
+        "text_len": len(text),
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "dimensions": dimensions,
+    }
 
 
 class AIProvider(ABC):
@@ -91,6 +102,9 @@ class AIProvider(ABC):
     def consume_last_llm_boundary_payload(self) -> TraceBoundaryPayload | None:
         return None
 
+    def consume_last_embedding_metadata(self) -> dict[str, Any] | None:
+        return None
+
 
 class EmbeddingProvider(ABC):
     @abstractmethod
@@ -100,13 +114,29 @@ class EmbeddingProvider(ABC):
     async def close(self) -> None:
         return None
 
+    def consume_last_embedding_metadata(self) -> dict[str, Any] | None:
+        return None
+
 
 class StubAIProvider(AIProvider):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._last_embedding_metadata: dict[str, Any] | None = None
 
     async def embed(self, text: str) -> list[float]:
-        return stable_embedding(text, self.settings.embedding_dimensions)
+        embedding = stable_embedding(text, self.settings.embedding_dimensions)
+        self._last_embedding_metadata = _embedding_metadata(
+            provider="stub",
+            model="stable_embedding",
+            text=text,
+            dimensions=len(embedding),
+        )
+        return embedding
+
+    def consume_last_embedding_metadata(self) -> dict[str, Any] | None:
+        metadata = self._last_embedding_metadata
+        self._last_embedding_metadata = None
+        return metadata
 
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
         raise NotImplementedError(
@@ -225,9 +255,22 @@ class StubAIProvider(AIProvider):
 class StubEmbeddingProvider(EmbeddingProvider):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._last_embedding_metadata: dict[str, Any] | None = None
 
     async def embed(self, text: str) -> list[float]:
-        return stable_embedding(text, self.settings.embedding_dimensions)
+        embedding = stable_embedding(text, self.settings.embedding_dimensions)
+        self._last_embedding_metadata = _embedding_metadata(
+            provider="stub",
+            model="stable_embedding",
+            text=text,
+            dimensions=len(embedding),
+        )
+        return embedding
+
+    def consume_last_embedding_metadata(self) -> dict[str, Any] | None:
+        metadata = self._last_embedding_metadata
+        self._last_embedding_metadata = None
+        return metadata
 
 
 class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
@@ -241,6 +284,7 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=httpx.Timeout(settings.openai_timeout_seconds, connect=20.0),
         )
+        self._last_embedding_metadata: dict[str, Any] | None = None
 
     async def embed(self, text: str) -> list[float]:
         t0 = time.monotonic()
@@ -265,7 +309,19 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
             raise
         payload = response.json()
         embedding = payload["data"][0]["embedding"]
-        return fit_embedding_dimensions(embedding, self.settings.embedding_dimensions)
+        fitted = fit_embedding_dimensions(embedding, self.settings.embedding_dimensions)
+        self._last_embedding_metadata = _embedding_metadata(
+            provider="openai_compatible",
+            model=self.settings.openai_embeddings_model,
+            text=text,
+            dimensions=len(fitted),
+        )
+        return fitted
+
+    def consume_last_embedding_metadata(self) -> dict[str, Any] | None:
+        metadata = self._last_embedding_metadata
+        self._last_embedding_metadata = None
+        return metadata
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -285,6 +341,9 @@ class StructuredLLMProvider(AIProvider):
         payload = self._last_llm_boundary_payload
         self._last_llm_boundary_payload = None
         return payload
+
+    def consume_last_embedding_metadata(self) -> dict[str, Any] | None:
+        return self._embedding_provider.consume_last_embedding_metadata()
 
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
         system_prompt = (

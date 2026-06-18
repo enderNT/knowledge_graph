@@ -94,6 +94,26 @@ def test_openai_provider_exposes_full_llm_boundary_payload():
     assert payload.metadata["parsed_content"]["domain"] == "General"
 
 
+def test_stub_embedding_metadata_excludes_vector(settings):
+    provider = StubAIProvider(settings)
+    embedding = asyncio.run(provider.embed("texto para vectorizar"))
+    metadata = provider.consume_last_embedding_metadata()
+
+    assert len(embedding) == settings.embedding_dimensions
+    assert metadata is not None
+    assert metadata == {
+        "provider": "stub",
+        "model": "stable_embedding",
+        "text_len": len("texto para vectorizar"),
+        "text_sha256": metadata["text_sha256"],
+        "dimensions": settings.embedding_dimensions,
+    }
+    assert len(metadata["text_sha256"]) == 64
+    assert "embedding" not in metadata
+    assert "vector" not in metadata
+    assert provider.consume_last_embedding_metadata() is None
+
+
 def test_llm_sanitize_concepts_keeps_any_non_empty_name():
     """After removing wordlist gates, _sanitize_concepts must not discard concepts for
     language-specific reasons — only empty names are invalid."""
