@@ -167,7 +167,7 @@ def create_app(
         response.headers["x-request-id"] = req_id
         return response
 
-    from app.routers import adaptive, concepts, deletions, episodes, health, jobs, knowledge, observability, pedagogical, search, sr
+    from app.routers import adaptive, concepts, deletions, episodes, health, jobs, knowledge, observability, pedagogical, search, sr, traces
 
     app.include_router(health.router)
     app.include_router(knowledge.router)
@@ -180,5 +180,6 @@ def create_app(
     app.include_router(sr.router)
     app.include_router(adaptive.router)
     app.include_router(observability.router)
+    app.include_router(traces.router)
     return app
 app = create_app()
