@@ -14,6 +14,7 @@ from app.utils import fit_embedding_dimensions
 class _CapturedResponse:
     def __init__(self, content: dict[str, object]) -> None:
         self._content = content
+        self.text = json.dumps({"choices": [{"message": {"content": json.dumps(self._content)}}]})
 
     def raise_for_status(self):
         return None
@@ -35,6 +36,7 @@ class _CapturedClient:
 class _GatewayCapturedResponse:
     def __init__(self, content: dict[str, object]) -> None:
         self._content = content
+        self.text = json.dumps({"content_json": self._content})
 
     def raise_for_status(self):
         return None
@@ -64,6 +66,32 @@ def test_stub_vet_extraction_raises(settings):
     extraction = ExtractionResult(domain="General")
     with pytest.raises(NotImplementedError, match="requires a real LLM provider"):
         asyncio.run(provider.vet_extraction(extraction=extraction, text="Texto.", language="es"))
+
+
+def test_openai_provider_exposes_full_llm_boundary_payload():
+    settings = Settings(
+        app_env="test",
+        API_KEY="test-api-key",
+        ARCADEDB_ROOT_PASSWORD="test-password",
+        OPENAI_API_KEY="sk-test",
+        AI_PROVIDER="openai_compatible",
+        embedding_dimensions=16,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    provider.client = _CapturedClient({"domain": "General", "topics": ["General"], "concepts": [], "claims": [], "relations": []})  # type: ignore[assignment]
+
+    asyncio.run(provider.extract("Texto completo para el LLM.", "es", ["General"]))
+    payload = provider.consume_last_llm_boundary_payload()
+
+    assert payload is not None
+    assert payload.kind == "llm"
+    assert payload.provider == "openai_compatible"
+    assert "Texto completo para el LLM." in (payload.request_text or "")
+    assert payload.response_text is not None
+    assert "\"choices\"" in payload.response_text
+    assert "\\\"domain\\\": \\\"General\\\"" in payload.response_text
+    assert payload.response_json is not None
+    assert payload.metadata["parsed_content"]["domain"] == "General"
 
 
 def test_llm_sanitize_concepts_keeps_any_non_empty_name():

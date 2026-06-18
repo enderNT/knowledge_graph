@@ -21,6 +21,7 @@ from app.schemas import (
     LearnerResponseGradingDecision,
     PedagogicalEvidenceDecision,
 )
+from app.trace_models import TraceBoundaryPayload
 from app.utils import dedupe_preserve_order, fit_embedding_dimensions, normalize_text, stable_embedding
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,9 @@ class AIProvider(ABC):
         raise NotImplementedError
 
     async def close(self) -> None:
+        return None
+
+    def consume_last_llm_boundary_payload(self) -> TraceBoundaryPayload | None:
         return None
 
 
@@ -272,9 +276,15 @@ class StructuredLLMProvider(AIProvider):
         self.settings = settings
         self.fallback_provider = StubAIProvider(settings)
         self._embedding_provider = embedding_provider
+        self._last_llm_boundary_payload: TraceBoundaryPayload | None = None
 
     async def embed(self, text: str) -> list[float]:
         return await self._embedding_provider.embed(text)
+
+    def consume_last_llm_boundary_payload(self) -> TraceBoundaryPayload | None:
+        payload = self._last_llm_boundary_payload
+        self._last_llm_boundary_payload = None
+        return payload
 
     async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
         system_prompt = (
@@ -848,6 +858,7 @@ class OpenAICompatibleProvider(StructuredLLMProvider):
             payload["temperature"] = temperature
 
         t0 = time.monotonic()
+        request_text = json.dumps(payload, ensure_ascii=True)
         logger.debug("openai request", extra={"model": self.settings.openai_chat_model})
         try:
             response = await self.client.post("chat/completions", json=payload)
@@ -866,6 +877,16 @@ class OpenAICompatibleProvider(StructuredLLMProvider):
         parsed = json.loads(content)
         if not isinstance(parsed, dict):
             raise ValueError("structured response must be a JSON object")
+        self._last_llm_boundary_payload = TraceBoundaryPayload(
+            kind="llm",
+            provider="openai_compatible",
+            model=self.settings.openai_chat_model,
+            request_text=request_text,
+            response_text=response.text,
+            request_json=payload,
+            response_json=raw_payload,
+            metadata={"parsed_content": parsed},
+        )
         logger.debug("openai response", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "model": self.settings.openai_chat_model})
         return parsed
 
@@ -907,6 +928,7 @@ class AnthropicGatewayProvider(StructuredLLMProvider):
 
         t0 = time.monotonic()
         model = self.settings.anthropic_chat_model or ""
+        request_text = json.dumps(payload, ensure_ascii=True)
         logger.debug("anthropic request", extra={"model": model})
         try:
             response = await self.client.post("v1/generate-json", json=payload)
@@ -924,6 +946,16 @@ class AnthropicGatewayProvider(StructuredLLMProvider):
         content = raw_payload["content_json"]
         if not isinstance(content, dict):
             raise ValueError("gateway content_json must be a JSON object")
+        self._last_llm_boundary_payload = TraceBoundaryPayload(
+            kind="llm",
+            provider="anthropic",
+            model=model,
+            request_text=request_text,
+            response_text=response.text,
+            request_json=payload,
+            response_json=raw_payload,
+            metadata={"parsed_content": content},
+        )
         logger.debug("anthropic response", extra={"duration_ms": int((time.monotonic() - t0) * 1000), "model": model})
         return content
 

@@ -62,7 +62,7 @@ T1|x|add canonical trace schemas + closed vocab types|V1,V2,V4,V9,I.store
 T2|x|add ArcadeDB trace schema bootstrap + store methods|V1,V2,V7,V17,I.store
 T3|x|add trace buffer/recorder with sequence, parent ids, close aggregation|V6,V7,V9,V15,V17,I.ingestion
 T4|x|add Spanish trace copy template module|V14,I.copy
-T5|.|expose/capture LLM boundary payloads for extraction + vetting|V10,V11,I.llm
+T5|x|expose/capture LLM boundary payloads for extraction + vetting|V10,V11,I.llm
 T6|.|capture embedding metadata without vectors|V12,I.embed
 T7|.|instrument ingestion vertical slice: `fragment_received`, `knowledge_extracted`, `extraction_vetted`, `ingestion_finalized`, `ingestion_failed`|V15,V19,I.ingestion
 T8|.|ensure trace failures log operationally and never alter job result|V16,I.obs,I.ingestion
