@@ -15,6 +15,7 @@ from app.schemas import (
     ConceptResolution,
     ExtractionResult,
     IngestionSummary,
+    PedagogicalEvidenceDecision,
     UpsertConceptRequest,
 )
 from app.store import ConceptConflictError, KnowledgeStore
@@ -46,6 +47,16 @@ def _trace_vetting_status(raw: ExtractionResult, vetted: ExtractionResult):
         return "empty"
     if vetted_total < raw_total:
         return "partial"
+    return "succeeded"
+
+
+def _trace_collection_status(*, total: int, needs_review: int = 0, created: int = 0):
+    if needs_review and created:
+        return "partial"
+    if needs_review:
+        return "needs_review"
+    if total == 0 or created == 0:
+        return "empty"
     return "succeeded"
 
 
@@ -183,6 +194,10 @@ class IngestionService:
 
             summary = IngestionSummary(episode_id=episode.uid, domain=extraction.domain)
             resolved_concepts: dict[str, ConceptResolution] = {}
+            concept_decisions: list[dict[str, object]] = []
+            claim_decisions: list[dict[str, object]] = []
+            evidence_decisions: list[dict[str, object]] = []
+            relation_decisions: list[dict[str, object]] = []
             claim_support_counts = Counter(
                 concept_name
                 for extracted_claim in extraction.claims
@@ -221,6 +236,15 @@ class IngestionService:
                     candidates,
                 )
                 resolved_concepts[extracted_concept.canonical_name] = resolution
+                concept_decisions.append(
+                    {
+                        "concept": extracted_concept.canonical_name,
+                        "strategy": resolution.strategy,
+                        "status": "needs_review" if resolution.strategy in {"ambiguous", "rejected"} else "succeeded",
+                        "concept_uid": resolution.concept.uid if resolution.concept else "",
+                        "reason": resolution.needs_review_reason or "",
+                    }
+                )
                 logger.debug(
                     "concept resolved",
                     extra={"concept": extracted_concept.canonical_name, "strategy": resolution.strategy},
@@ -253,6 +277,33 @@ class IngestionService:
                     "output_shape": {"created": len(summary.created_concepts), "updated": len(summary.updated_concepts), "needs_review": len(summary.needs_review)},
                 },
             )
+            concepts_status = _trace_collection_status(
+                total=len(extraction.concepts),
+                created=len(summary.created_concepts) + len(summary.updated_concepts),
+                needs_review=sum(1 for item in concept_decisions if item["status"] == "needs_review"),
+            )
+            concepts_event = trace.record_step(
+                type="concepts_resolved",
+                status=concepts_status,
+                title=trace_title("concepts_resolved", concepts_status),
+                summary=trace_summary("concepts_resolved"),
+                input={"concepts": len(extraction.concepts), "domain": extraction.domain},
+                output={
+                    "created": len(summary.created_concepts),
+                    "updated": len(summary.updated_concepts),
+                    "needs_review": sum(1 for item in concept_decisions if item["status"] == "needs_review"),
+                },
+            )
+            for decision in concept_decisions:
+                trace.record_decision(
+                    parent_event_id=concepts_event.event_id,
+                    type="concepts_resolved",
+                    status=decision["status"],
+                    title=trace_title("concepts_resolved", decision["status"], subject=str(decision["concept"])),
+                    input={"concept": decision["concept"]},
+                    output={"concept_uid": decision["concept_uid"]},
+                    detail={"strategy": decision["strategy"], "reason": decision["reason"]},
+                )
 
             bind(step="create_claims")
             for extracted_claim in extraction.claims:
@@ -265,6 +316,14 @@ class IngestionService:
                     supporting_quote=extracted_claim.supporting_quote,
                 )
                 summary.created_claims += 1
+                claim_decisions.append(
+                    {
+                        "claim_uid": claim.uid,
+                        "claim_text": claim.text,
+                        "status": "succeeded",
+                        "explains": extracted_claim.explains,
+                    }
+                )
                 logger.debug("claim created", extra={"claim_uid": claim.uid, "explains": extracted_claim.explains})
                 await self.store.link_claim_to_episode(claim.uid, episode.uid, extracted_claim.confidence)
                 for concept_name in extracted_claim.explains:
@@ -277,7 +336,7 @@ class IngestionService:
                         )
                         linked_claim_counts[concept_name] += 1
                         bind(step="vet_evidence")
-                        await self._persist_pedagogical_evidence(
+                        evidence_decision = await self._persist_pedagogical_evidence(
                             episode_id=episode.uid,
                             claim_uid=claim.uid,
                             claim_text=claim.text,
@@ -286,6 +345,17 @@ class IngestionService:
                             concept_name=concept_resolution.concept.canonical_name,
                             language=episode.language,
                         )
+                        if evidence_decision is not None:
+                            evidence_decisions.append(
+                                {
+                                    "concept": concept_resolution.concept.canonical_name,
+                                    "claim_uid": claim.uid,
+                                    "status": "succeeded" if evidence_decision.status == "approved" else "needs_review",
+                                    "decision_status": evidence_decision.status,
+                                    "kind": evidence_decision.kind,
+                                    "review_notes": evidence_decision.review_notes,
+                                }
+                            )
 
             bind(step="fill_evidence_claims")
             for extracted_concept in extraction.concepts:
@@ -306,6 +376,14 @@ class IngestionService:
                     supporting_quote=quote,
                 )
                 summary.created_claims += 1
+                claim_decisions.append(
+                    {
+                        "claim_uid": claim.uid,
+                        "claim_text": claim.text,
+                        "status": "succeeded",
+                        "explains": [extracted_concept.canonical_name],
+                    }
+                )
                 logger.debug(
                     "evidence claim created",
                     extra={"claim_uid": claim.uid, "concept": extracted_concept.canonical_name},
@@ -318,7 +396,7 @@ class IngestionService:
                 )
                 linked_claim_counts[extracted_concept.canonical_name] += 1
                 bind(step="vet_evidence")
-                await self._persist_pedagogical_evidence(
+                evidence_decision = await self._persist_pedagogical_evidence(
                     episode_id=episode.uid,
                     claim_uid=claim.uid,
                     claim_text=claim.text,
@@ -327,16 +405,95 @@ class IngestionService:
                     concept_name=concept_resolution.concept.canonical_name,
                     language=episode.language,
                 )
+                if evidence_decision is not None:
+                    evidence_decisions.append(
+                        {
+                            "concept": concept_resolution.concept.canonical_name,
+                            "claim_uid": claim.uid,
+                            "status": "succeeded" if evidence_decision.status == "approved" else "needs_review",
+                            "decision_status": evidence_decision.status,
+                            "kind": evidence_decision.kind,
+                            "review_notes": evidence_decision.review_notes,
+                        }
+                    )
+
+            claims_status = _trace_collection_status(total=len(extraction.claims), created=len(claim_decisions))
+            claims_event = trace.record_step(
+                type="claims_created",
+                status=claims_status,
+                title=trace_title("claims_created", claims_status),
+                summary=trace_summary("claims_created"),
+                input={"claims": len(extraction.claims)},
+                output={"created": len(claim_decisions)},
+            )
+            for decision in claim_decisions:
+                trace.record_decision(
+                    parent_event_id=claims_event.event_id,
+                    type="claims_created",
+                    status=decision["status"],
+                    title=trace_title("claims_created", decision["status"], subject=str(decision["claim_uid"])),
+                    input={"claim_text": decision["claim_text"], "explains": decision["explains"]},
+                    output={"claim_uid": decision["claim_uid"]},
+                )
+
+            approved_evidence = sum(1 for item in evidence_decisions if item["status"] == "succeeded")
+            evidence_status = "succeeded" if approved_evidence == len(evidence_decisions) and evidence_decisions else "partial"
+            if not evidence_decisions:
+                evidence_status = "empty"
+            elif approved_evidence == 0:
+                evidence_status = "needs_review"
+            evidence_event = trace.record_step(
+                type="pedagogical_evidence_vetted",
+                status=evidence_status,
+                title=trace_title("pedagogical_evidence_vetted", evidence_status),
+                summary=trace_summary("pedagogical_evidence_vetted"),
+                input={"claims": len(claim_decisions)},
+                output={"approved": approved_evidence, "needs_review": len(evidence_decisions) - approved_evidence},
+            )
+            for decision in evidence_decisions:
+                trace.record_decision(
+                    parent_event_id=evidence_event.event_id,
+                    type="pedagogical_evidence_vetted",
+                    status=decision["status"],
+                    title=trace_title(
+                        "pedagogical_evidence_vetted",
+                        decision["status"],
+                        subject=str(decision["concept"]),
+                    ),
+                    input={"claim_uid": decision["claim_uid"], "concept": decision["concept"]},
+                    output={"decision_status": decision["decision_status"], "kind": decision["kind"]},
+                    detail={"review_notes": decision["review_notes"]},
+                )
 
             bind(step="create_relations")
             for relation in extraction.relations:
                 from_resolution = resolved_concepts.get(relation.from_name)
                 to_resolution = resolved_concepts.get(relation.to_name)
                 if not from_resolution or not from_resolution.concept:
-                    summary.needs_review.append(f"missing source concept for relation: {relation.from_name}")
+                    reason = f"missing source concept for relation: {relation.from_name}"
+                    summary.needs_review.append(reason)
+                    relation_decisions.append(
+                        {
+                            "relation": relation.relation,
+                            "from": relation.from_name,
+                            "to": relation.to_name,
+                            "status": "needs_review",
+                            "reason": reason,
+                        }
+                    )
                     continue
                 if not to_resolution or not to_resolution.concept:
-                    summary.needs_review.append(f"missing target concept for relation: {relation.to_name}")
+                    reason = f"missing target concept for relation: {relation.to_name}"
+                    summary.needs_review.append(reason)
+                    relation_decisions.append(
+                        {
+                            "relation": relation.relation,
+                            "from": relation.from_name,
+                            "to": relation.to_name,
+                            "status": "needs_review",
+                            "reason": reason,
+                        }
+                    )
                     continue
                 created = await self.store.create_relation(
                     from_ref=from_resolution.concept.uid,
@@ -353,6 +510,41 @@ class IngestionService:
                             to_resolution.concept.canonical_name,
                         ]
                     )
+                relation_decisions.append(
+                    {
+                        "relation": relation.relation,
+                        "from": from_resolution.concept.canonical_name,
+                        "to": to_resolution.concept.canonical_name,
+                        "status": "succeeded" if created else "skipped",
+                        "reason": "" if created else "relation already existed",
+                    }
+                )
+
+            relation_needs_review = sum(1 for item in relation_decisions if item["status"] == "needs_review")
+            relations_status = _trace_collection_status(
+                total=len(extraction.relations),
+                created=len(summary.relations),
+                needs_review=relation_needs_review,
+            )
+            relations_event = trace.record_step(
+                type="relations_created",
+                status=relations_status,
+                title=trace_title("relations_created", relations_status),
+                summary=trace_summary("relations_created"),
+                input={"relations": len(extraction.relations)},
+                output={"created": len(summary.relations), "needs_review": relation_needs_review},
+            )
+            for decision in relation_decisions:
+                subject = f"{decision['from']} {decision['relation']} {decision['to']}"
+                trace.record_decision(
+                    parent_event_id=relations_event.event_id,
+                    type="relations_created",
+                    status=decision["status"],
+                    title=trace_title("relations_created", decision["status"], subject=subject),
+                    input={"from": decision["from"], "relation": decision["relation"], "to": decision["to"]},
+                    output={"created": decision["status"] == "succeeded"},
+                    detail={"reason": decision["reason"]},
+                )
 
             bind(step="finalize")
             await self.store.update_episode(episode.uid, status="processed")
@@ -523,10 +715,10 @@ class IngestionService:
         concept_uid: str,
         concept_name: str,
         language: str,
-    ) -> None:
+    ) -> PedagogicalEvidenceDecision | None:
         effective_quote = supporting_quote or claim_text
         if not effective_quote:
-            return
+            return None
         decision = await self.ai_provider.vet_pedagogical_evidence(
             concept_name=concept_name,
             claim_text=claim_text,
@@ -538,7 +730,7 @@ class IngestionService:
             extra={"concept": concept_name, "status": decision.status, "kind": decision.kind},
         )
         if decision.status != "approved":
-            return
+            return decision
         await self.store.create_pedagogical_evidence(
             concept_uid=concept_uid,
             concept_name=concept_name,
@@ -550,6 +742,7 @@ class IngestionService:
             status=decision.status,
             review_notes_json=json.dumps(decision.review_notes, ensure_ascii=True) if decision.review_notes else None,
         )
+        return decision
 
     @staticmethod
     def _best_evidence_quote(evidence_quotes: list[str]) -> str | None:

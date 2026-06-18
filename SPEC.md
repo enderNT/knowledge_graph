@@ -70,7 +70,7 @@ T9|x|add `/v1/traces` list/detail/export endpoints|V3,V17,V18,I.api,I.api.detail
 T10|x|add UI trace list + detail with reading order, nesting, LLM payload detail|V5,V8,V10,V18,I.ui
 T11|x|add text export rendering same order/indent/copy as UI|V8,V18,I.api.export,I.ui
 T12|x|add backend contract tests for buffer, sequence, nesting, Spanish copy, LLM payload completeness, success/failure persist|V7,V9,V10,V14,V15,V20
-T13|.|extend ingestion trace decisions: concepts resolved, claims created, evidence vetted, relations created|V9,V13,V19,I.ingestion
+T13|x|extend ingestion trace decisions: concepts resolved, claims created, evidence vetted, relations created|V9,V13,V19,I.ingestion
 T14|.|add UI tests for reading-order transform + browser visual check after detail view exists|V5,V8,V18,V20,I.ui
 
 §B

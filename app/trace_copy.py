@@ -34,18 +34,22 @@ _TITLE_TEMPLATES: dict[TraceEventType, dict[TraceStatus, str]] = {
         "succeeded": "Claims creados",
         "partial": "Claims creados parcialmente",
         "empty": "Sin claims creados",
+        "skipped": "Claim omitido",
         "failed": "No se pudieron crear claims",
     },
     "pedagogical_evidence_vetted": {
         "succeeded": "Evidencia pedagogica aprobada",
         "partial": "Evidencia pedagogica revisada con rechazos",
         "empty": "Sin evidencia pedagogica aprobada",
+        "needs_review": "Evidencia pedagogica requiere revision",
         "failed": "No se pudo revisar evidencia pedagogica",
     },
     "relations_created": {
         "succeeded": "Relaciones creadas",
         "partial": "Relaciones creadas parcialmente",
         "empty": "Sin relaciones creadas",
+        "skipped": "Relacion omitida",
+        "needs_review": "Relacion requiere revision",
         "failed": "No se pudieron crear relaciones",
     },
     "ingestion_finalized": {

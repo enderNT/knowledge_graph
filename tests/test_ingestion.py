@@ -190,15 +190,29 @@ def test_ingestion_pipeline_persists_canonical_trace(client, auth_headers, store
     assert trace.summary.execution_id == accepted["job_id"]
     assert trace.summary.episode_id == accepted["episode_id"]
     assert trace.summary.status in {"succeeded", "needs_review"}
-    assert [event.type for event in trace.events] == [
+    event_types = [event.type for event in trace.events]
+    for expected_type in [
         "fragment_received",
         "knowledge_extracted",
         "extraction_vetted",
+        "concepts_resolved",
+        "claims_created",
+        "pedagogical_evidence_vetted",
+        "relations_created",
         "ingestion_finalized",
-    ]
-    assert [event.sequence for event in trace.events] == [1, 2, 3, 4]
+    ]:
+        assert expected_type in event_types
+    assert [event.sequence for event in trace.events] == list(range(1, len(trace.events) + 1))
     assert trace.events[0].title == "Fragmento recibido"
-    assert trace.summary.total_steps == 4
+    assert trace.summary.total_steps == 8
+    assert trace.summary.total_decisions >= 5
+    parent_ids = {event.event_id for event in trace.events if event.role == "step"}
+    decision_types = {event.type for event in trace.events if event.role == "decision"}
+    assert {"concepts_resolved", "claims_created", "pedagogical_evidence_vetted", "relations_created"}.issubset(
+        decision_types
+    )
+    assert all(event.parent_event_id in parent_ids for event in trace.events if event.role == "decision")
+    assert not any("query" in event.detail or "sql" in event.detail for event in trace.events)
 
 
 @pytest.mark.asyncio
