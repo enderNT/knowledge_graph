@@ -1,6 +1,18 @@
 {
   "version": 1,
   "skills": {
+    "backprop": {
+      "source": "JuliusBrussee/cavekit",
+      "sourceType": "github",
+      "skillPath": "skills/backprop/SKILL.md",
+      "computedHash": "7d23e415bf412ff01fa8c3d920c269f6ac7a9ca0c337eafda861d412ba8f946c"
+    },
+    "build": {
+      "source": "JuliusBrussee/cavekit",
+      "sourceType": "github",
+      "skillPath": "skills/build/SKILL.md",
+      "computedHash": "380b2ed44d9766582dca06e3a564ffafe3129132e8b0051664716521b76c9c50"
+    },
     "cavecrew": {
       "source": "juliusbrussee/caveman",
       "sourceType": "github",
@@ -8,10 +20,10 @@
       "computedHash": "505d836228d1c5e14834ff5d62aad72390c7d27f79c6aa7f9a7a55ed6606d6a2"
     },
     "caveman": {
-      "source": "JuliusBrussee/caveman",
+      "source": "JuliusBrussee/cavekit",
       "sourceType": "github",
       "skillPath": "skills/caveman/SKILL.md",
-      "computedHash": "1902fa0b569912d0c05736d8d98a72097d9b82719aac88c0c1d03bb546f9176d"
+      "computedHash": "b7296730e7d074253e6806b9e71dab4a6e1cbfeb643cafc000f9ce7bec0a825c"
     },
     "caveman-compress": {
       "source": "juliusbrussee/caveman",
@@ -19,11 +31,23 @@
       "skillPath": "skills/caveman-compress/SKILL.md",
       "computedHash": "1e9b3e2bf68b75dc0252c4328c8514bea79d4d8f7d7259da616ba7d12cad6865"
     },
+    "check": {
+      "source": "JuliusBrussee/cavekit",
+      "sourceType": "github",
+      "skillPath": "skills/check/SKILL.md",
+      "computedHash": "9318e8cf08cbb3be90cb1970d4cfa225f18645f5775d83e2bce83c2dc813220a"
+    },
     "claude-design": {
       "source": "jiji262/claude-design-skill",
       "sourceType": "github",
       "skillPath": "SKILL.md",
       "computedHash": "b8f0bc6685a0dfa63460471567751dc4edf6521616b42e14238d2653a91ce796"
+    },
+    "grill-with-docs": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/grill-with-docs/SKILL.md",
+      "computedHash": "eb0e91e84277283dc2b23ed544399e53afd6b5287e5b6929f25fe8aa608e164b"
     },
     "minimalist-ui": {
       "source": "leonxlnx/taste-skill",
@@ -42,6 +66,12 @@
       "sourceType": "github",
       "skillPath": "skills/remotion/SKILL.md",
       "computedHash": "006f8413941b59eff54a7ce64851b8a2fb79e7a3a5f1a895e97a48f01482553d"
+    },
+    "spec": {
+      "source": "JuliusBrussee/cavekit",
+      "sourceType": "github",
+      "skillPath": "skills/spec/SKILL.md",
+      "computedHash": "968e19b8644a9dc182bd481fe6e534befc78f158514dfa9d16c53ecd7a543065"
     }
   }
 }

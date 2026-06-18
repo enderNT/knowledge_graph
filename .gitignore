@@ -23,6 +23,8 @@ htmlcov/
 .codex/*
 .agents/*
 
+plugins/
+
 # IDE/editor files
 .vscode/
 .idea/
