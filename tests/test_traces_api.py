@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.trace_models import CanonicalTrace, TraceEvent, TraceSummary
+from app.trace_models import CanonicalTrace, TraceBoundaryPayload, TraceEvent, TraceSummary
 
 
 def _trace() -> CanonicalTrace:
@@ -29,7 +29,26 @@ def _trace() -> CanonicalTrace:
         output={"created_concepts": 1},
         created_at="2026-06-17T00:00:01+00:00",
     )
-    return CanonicalTrace(summary=summary, events=[event])
+    child = TraceEvent(
+        event_id="te_child",
+        trace_id="tr_api",
+        parent_event_id="te_api",
+        sequence=2,
+        type="knowledge_extracted",
+        role="decision",
+        status="succeeded",
+        title="Conocimiento extraido",
+        summary="El proveedor LLM devolvio una propuesta estructurada de conocimiento.",
+        boundary_payload=TraceBoundaryPayload(
+            kind="llm",
+            provider="openai_compatible",
+            model="test-model",
+            request_text="INPUT COMPLETO",
+            response_text="OUTPUT COMPLETO",
+        ),
+        created_at="2026-06-17T00:00:01+00:00",
+    )
+    return CanonicalTrace(summary=summary, events=[event, child])
 
 
 def test_trace_api_lists_reads_and_exports(client, auth_headers, store):
@@ -52,6 +71,11 @@ def test_trace_api_lists_reads_and_exports(client, auth_headers, store):
     assert exported.headers["content-type"].startswith("text/plain")
     assert "Traza: tr_api" in exported.text
     assert "1. Ingesta finalizada [succeeded]" in exported.text
+    assert "  2. Conocimiento extraido [succeeded]" in exported.text
+    assert "Input enviado:" in exported.text
+    assert "INPUT COMPLETO" in exported.text
+    assert "Output recibido:" in exported.text
+    assert "OUTPUT COMPLETO" in exported.text
 
 
 def test_trace_api_requires_auth_and_returns_404(client, auth_headers):

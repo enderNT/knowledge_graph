@@ -78,6 +78,7 @@ export default function TraceDetailPage({ params }: { params: Promise<{ trace_id
                   <StatusBadge status={trace.summary.status} />
                 </div>
               </div>
+              <a className="btn-ghost" href={`/api/traces/${trace.summary.trace_id}/export`} style={{ textDecoration: "none" }}>Export text</a>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, auto)", gap: "4px 24px", fontSize: 12, textAlign: "right" }}>
                 <span style={{ color: "var(--text-secondary)" }}>Started</span>
                 <span style={{ color: "var(--text-secondary)" }}>Ended</span>
