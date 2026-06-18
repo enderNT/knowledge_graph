@@ -11,6 +11,7 @@ import httpx
 from app.arcadedb_client import ArcadeDBClient
 from app.config import Settings
 from app.schema_bootstrap import ensure_database_and_schema
+from app.schema_bootstrap_traces import ensure_trace_schema
 from app.schemas import (
     ALLOWED_RELATIONS,
     AdaptiveBlockAnswerKey,
@@ -65,6 +66,7 @@ from app.schemas import (
     UpsertConceptRequest,
     concept_ref_to_normalized,
 )
+from app.trace_models import CanonicalTrace, TraceEvent, TraceSummary
 from app.utils import cosine_similarity, make_prefixed_id, normalize_text, utcnow_iso
 from app.utils import fit_embedding_dimensions
 
@@ -174,6 +176,19 @@ class KnowledgeStore(Protocol):
         interaction_events: list[AdaptiveInteractionEvent],
         block_result: AdaptiveBlockResult | None,
     ) -> None: ...
+    async def persist_canonical_trace(self, trace: CanonicalTrace) -> None: ...
+    async def get_canonical_trace(self, trace_id: str) -> CanonicalTrace | None: ...
+    async def list_canonical_traces(
+        self,
+        *,
+        sort: str = "desc",
+        limit: int = 10,
+        skip: int = 0,
+        execution_id: str | None = None,
+        episode_id: str | None = None,
+        status: str | None = None,
+        domain: str | None = None,
+    ) -> list[TraceSummary]: ...
 
 
 class ConceptConflictError(ValueError):
@@ -200,6 +215,7 @@ class ArcadeKnowledgeStore:
 
     async def bootstrap_schema(self) -> None:
         await ensure_database_and_schema(self.client, self.settings)
+        await ensure_trace_schema(self.client)
 
     async def check_ready(self) -> bool:
         return await self.client.ready() and await self.client.database_exists()
@@ -1835,6 +1851,145 @@ class ArcadeKnowledgeStore:
             payload,
         )
 
+    async def persist_canonical_trace(self, trace: CanonicalTrace) -> None:
+        summary = trace.summary
+        payload = {
+            "trace_id": summary.trace_id,
+            "execution_type": summary.execution_type,
+            "execution_id": summary.execution_id,
+            "episode_id": summary.episode_id or "",
+            "status": summary.status,
+            "started_at": summary.started_at,
+            "ended_at": summary.ended_at or "",
+            "duration_ms": summary.duration_ms,
+            "total_steps": summary.total_steps,
+            "total_decisions": summary.total_decisions,
+            "error_count": summary.error_count,
+            "status_counts_json": json.dumps(summary.status_counts),
+            "semantic_counts_json": json.dumps(summary.semantic_counts),
+            "domain": summary.domain,
+        }
+        rows = await self._safe_query(
+            "SELECT trace_id FROM CanonicalTrace WHERE trace_id = :trace_id LIMIT 1",
+            {"trace_id": summary.trace_id},
+        )
+        if rows:
+            await self.client.command(
+                (
+                    "UPDATE CanonicalTrace SET execution_type = :execution_type, execution_id = :execution_id, "
+                    "episode_id = :episode_id, status = :status, started_at = :started_at, ended_at = :ended_at, "
+                    "duration_ms = :duration_ms, total_steps = :total_steps, total_decisions = :total_decisions, "
+                    "error_count = :error_count, status_counts_json = :status_counts_json, "
+                    "semantic_counts_json = :semantic_counts_json, domain = :domain WHERE trace_id = :trace_id"
+                ),
+                payload,
+            )
+        else:
+            await self.client.command(
+                (
+                    "INSERT INTO CanonicalTrace SET trace_id = :trace_id, execution_type = :execution_type, "
+                    "execution_id = :execution_id, episode_id = :episode_id, status = :status, "
+                    "started_at = :started_at, ended_at = :ended_at, duration_ms = :duration_ms, "
+                    "total_steps = :total_steps, total_decisions = :total_decisions, error_count = :error_count, "
+                    "status_counts_json = :status_counts_json, semantic_counts_json = :semantic_counts_json, "
+                    "domain = :domain"
+                ),
+                payload,
+            )
+
+        for event in trace.events:
+            event_payload = {
+                "event_id": event.event_id,
+                "trace_id": event.trace_id,
+                "parent_event_id": event.parent_event_id or "",
+                "sequence": event.sequence,
+                "type": event.type,
+                "role": event.role,
+                "status": event.status,
+                "title": event.title,
+                "summary": event.summary,
+                "input_json": json.dumps(event.input, default=str),
+                "output_json": json.dumps(event.output, default=str),
+                "detail_json": json.dumps(event.detail, default=str),
+                "boundary_payload_json": event.boundary_payload.model_dump_json() if event.boundary_payload else "",
+                "created_at": event.created_at,
+            }
+            event_rows = await self._safe_query(
+                "SELECT event_id FROM CanonicalTraceEvent WHERE event_id = :event_id LIMIT 1",
+                {"event_id": event.event_id},
+            )
+            if event_rows:
+                await self.client.command(
+                    (
+                        "UPDATE CanonicalTraceEvent SET trace_id = :trace_id, parent_event_id = :parent_event_id, "
+                        "sequence = :sequence, type = :type, role = :role, status = :status, title = :title, "
+                        "summary = :summary, input_json = :input_json, output_json = :output_json, "
+                        "detail_json = :detail_json, boundary_payload_json = :boundary_payload_json, "
+                        "created_at = :created_at WHERE event_id = :event_id"
+                    ),
+                    event_payload,
+                )
+                continue
+            await self.client.command(
+                (
+                    "INSERT INTO CanonicalTraceEvent SET event_id = :event_id, trace_id = :trace_id, "
+                    "parent_event_id = :parent_event_id, sequence = :sequence, type = :type, role = :role, "
+                    "status = :status, title = :title, summary = :summary, input_json = :input_json, "
+                    "output_json = :output_json, detail_json = :detail_json, "
+                    "boundary_payload_json = :boundary_payload_json, created_at = :created_at"
+                ),
+                event_payload,
+            )
+
+    async def get_canonical_trace(self, trace_id: str) -> CanonicalTrace | None:
+        rows = await self.client.query(
+            "SELECT FROM CanonicalTrace WHERE trace_id = :trace_id LIMIT 1",
+            {"trace_id": trace_id},
+        )
+        if not rows:
+            return None
+        event_rows = await self.client.query(
+            "SELECT FROM CanonicalTraceEvent WHERE trace_id = :trace_id ORDER BY sequence ASC",
+            {"trace_id": trace_id},
+        )
+        return CanonicalTrace(
+            summary=_trace_summary_from_row(rows[0]),
+            events=[_trace_event_from_row(row) for row in event_rows],
+        )
+
+    async def list_canonical_traces(
+        self,
+        *,
+        sort: str = "desc",
+        limit: int = 10,
+        skip: int = 0,
+        execution_id: str | None = None,
+        episode_id: str | None = None,
+        status: str | None = None,
+        domain: str | None = None,
+    ) -> list[TraceSummary]:
+        where: list[str] = []
+        params: dict[str, Any] = {"limit": min(limit, 100), "skip": max(skip, 0)}
+        if execution_id:
+            where.append("execution_id = :execution_id")
+            params["execution_id"] = execution_id
+        if episode_id:
+            where.append("episode_id = :episode_id")
+            params["episode_id"] = episode_id
+        if status:
+            where.append("status = :status")
+            params["status"] = status
+        if domain:
+            where.append("domain = :domain")
+            params["domain"] = domain
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        order = "DESC" if sort == "desc" else "ASC"
+        rows = await self.client.query(
+            f"SELECT FROM CanonicalTrace {where_sql} ORDER BY started_at {order} LIMIT :limit SKIP :skip",
+            params,
+        )
+        return [_trace_summary_from_row(row) for row in rows]
+
     async def _build_tutor_relations(
         self,
         concept_uids: Iterable[str],
@@ -2559,6 +2714,59 @@ class ArcadeKnowledgeStore:
         )
 
 
+def _trace_summary_from_row(row: dict[str, Any]) -> TraceSummary:
+    return TraceSummary.model_validate(
+        {
+            "trace_id": row.get("trace_id", ""),
+            "execution_type": row.get("execution_type", "ingestion_job"),
+            "execution_id": row.get("execution_id", ""),
+            "episode_id": row.get("episode_id") or None,
+            "status": row.get("status", "failed"),
+            "started_at": row.get("started_at", ""),
+            "ended_at": row.get("ended_at") or None,
+            "duration_ms": row.get("duration_ms"),
+            "total_steps": row.get("total_steps") or 0,
+            "total_decisions": row.get("total_decisions") or 0,
+            "error_count": row.get("error_count") or 0,
+            "status_counts": _json_dict(row.get("status_counts_json")),
+            "semantic_counts": _json_dict(row.get("semantic_counts_json")),
+            "domain": row.get("domain", ""),
+        }
+    )
+
+
+def _trace_event_from_row(row: dict[str, Any]) -> TraceEvent:
+    boundary = row.get("boundary_payload_json")
+    return TraceEvent.model_validate(
+        {
+            "event_id": row.get("event_id", ""),
+            "trace_id": row.get("trace_id", ""),
+            "parent_event_id": row.get("parent_event_id") or None,
+            "sequence": row.get("sequence") or 1,
+            "type": row.get("type", "ingestion_failed"),
+            "role": row.get("role", "step"),
+            "status": row.get("status", "failed"),
+            "title": row.get("title", ""),
+            "summary": row.get("summary", ""),
+            "input": _json_dict(row.get("input_json")),
+            "output": _json_dict(row.get("output_json")),
+            "detail": _json_dict(row.get("detail_json")),
+            "boundary_payload": json.loads(boundary) if boundary else None,
+            "created_at": row.get("created_at", ""),
+        }
+    )
+
+
+def _json_dict(raw: object) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 class InMemoryKnowledgeStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -2578,6 +2786,7 @@ class InMemoryKnowledgeStore:
         self.user_spaced_repetition: dict[tuple[str, str, str], SpacedRepetitionState] = {}
         self.adaptive_sessions: dict[str, AdaptiveSessionSnapshot] = {}
         self.adaptive_block_attempts: dict[str, dict[str, Any]] = {}
+        self.canonical_traces: dict[str, CanonicalTrace] = {}
 
     async def bootstrap_schema(self) -> None:
         return None
@@ -2602,6 +2811,7 @@ class InMemoryKnowledgeStore:
         self.user_spaced_repetition.clear()
         self.adaptive_sessions.clear()
         self.adaptive_block_attempts.clear()
+        self.canonical_traces.clear()
 
     async def create_episode(self, *, uid: str, text: str, source_type: str, tags: list[str], language: str, temporal: bool = False, expires_at: str | None = None) -> EpisodeRecord:
         episode = EpisodeRecord(
@@ -3555,6 +3765,36 @@ class InMemoryKnowledgeStore:
             "interaction_events": interaction_events,
             "block_result": block_result,
         }
+
+    async def persist_canonical_trace(self, trace: CanonicalTrace) -> None:
+        ordered = sorted(trace.events, key=lambda event: event.sequence)
+        self.canonical_traces[trace.summary.trace_id] = trace.model_copy(update={"events": ordered})
+
+    async def get_canonical_trace(self, trace_id: str) -> CanonicalTrace | None:
+        return self.canonical_traces.get(trace_id)
+
+    async def list_canonical_traces(
+        self,
+        *,
+        sort: str = "desc",
+        limit: int = 10,
+        skip: int = 0,
+        execution_id: str | None = None,
+        episode_id: str | None = None,
+        status: str | None = None,
+        domain: str | None = None,
+    ) -> list[TraceSummary]:
+        traces = list(self.canonical_traces.values())
+        if execution_id:
+            traces = [trace for trace in traces if trace.summary.execution_id == execution_id]
+        if episode_id:
+            traces = [trace for trace in traces if trace.summary.episode_id == episode_id]
+        if status:
+            traces = [trace for trace in traces if trace.summary.status == status]
+        if domain:
+            traces = [trace for trace in traces if trace.summary.domain == domain]
+        traces.sort(key=lambda trace: trace.summary.started_at, reverse=(sort == "desc"))
+        return [trace.summary for trace in traces[skip: skip + min(limit, 100)]]
 
     def _build_in_memory_episode_deletion_plan(
         self,

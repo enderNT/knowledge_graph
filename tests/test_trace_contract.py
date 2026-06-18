@@ -3,6 +3,9 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.config import Settings
+from app.schema_bootstrap_traces import _build_commands
+from app.store import InMemoryKnowledgeStore
 from app.trace_models import CanonicalTrace, TraceEvent, TraceSummary
 
 
@@ -56,3 +59,35 @@ def test_canonical_trace_requires_explicit_parent_identity():
     orphan = _event(parent_event_id="missing_parent")
     with pytest.raises(ValidationError, match="parent_event_id must reference"):
         CanonicalTrace(summary=_summary(), events=[orphan])
+
+
+def test_trace_schema_bootstrap_declares_canonical_types():
+    commands = _build_commands()
+    assert "CREATE DOCUMENT TYPE CanonicalTrace IF NOT EXISTS" in commands
+    assert "CREATE DOCUMENT TYPE CanonicalTraceEvent IF NOT EXISTS" in commands
+    assert "CREATE INDEX ON CanonicalTrace (trace_id) UNIQUE" in commands
+    assert "CREATE INDEX ON CanonicalTraceEvent (event_id) UNIQUE" in commands
+
+
+@pytest.mark.asyncio
+async def test_in_memory_store_persists_and_lists_canonical_trace():
+    store = InMemoryKnowledgeStore(
+        Settings(
+            app_env="test",
+            API_KEY="test-api-key",
+            ARCADEDB_ROOT_PASSWORD="test-password",
+            embedding_dimensions=16,
+        )
+    )
+    parent = _event(event_id="te_parent", parent_event_id=None, sequence=2, role="step")
+    child = _event(event_id="te_child", sequence=1)
+    summary = _summary(status_counts={"succeeded": 2}, total_steps=1, total_decisions=1)
+    await store.persist_canonical_trace(CanonicalTrace(summary=summary, events=[parent, child]))
+
+    trace = await store.get_canonical_trace("tr_123")
+    assert trace is not None
+    assert [event.sequence for event in trace.events] == [1, 2]
+
+    listed = await store.list_canonical_traces(execution_id="job_123")
+    assert [item.trace_id for item in listed] == ["tr_123"]
+    assert listed[0].status_counts == {"succeeded": 2}
