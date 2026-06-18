@@ -7,6 +7,7 @@ from app.config import Settings
 from app.schema_bootstrap_traces import _build_commands
 from app.store import InMemoryKnowledgeStore
 from app.trace_models import CanonicalTrace, TraceEvent, TraceSummary
+from app.trace_recorder import TraceRecorder
 
 
 def _event(**overrides):
@@ -91,3 +92,54 @@ async def test_in_memory_store_persists_and_lists_canonical_trace():
     listed = await store.list_canonical_traces(execution_id="job_123")
     assert [item.trace_id for item in listed] == ["tr_123"]
     assert listed[0].status_counts == {"succeeded": 2}
+
+
+def test_trace_recorder_records_monotonic_sequence_and_close_summary():
+    recorder = TraceRecorder(
+        trace_id="tr_456",
+        execution_type="ingestion_job",
+        execution_id="job_456",
+        episode_id="ep_456",
+    )
+    parent = recorder.record_step(
+        type="knowledge_extracted",
+        status="succeeded",
+        title="Conocimiento extraido",
+        output={"concepts": 2},
+    )
+    recorder.record_decision(
+        parent_event_id=parent.event_id,
+        type="knowledge_extracted",
+        status="needs_review",
+        title="Concepto requiere revision",
+    )
+    trace = recorder.close(status="partial", domain="Psicologia", semantic_counts={"concepts": 2})
+
+    assert [event.sequence for event in trace.events] == [1, 2]
+    assert trace.summary.total_steps == 1
+    assert trace.summary.total_decisions == 1
+    assert trace.summary.status_counts == {"succeeded": 1, "needs_review": 1}
+    assert trace.summary.semantic_counts == {"concepts": 2}
+    assert trace.summary.domain == "Psicologia"
+
+
+def test_trace_recorder_requires_existing_parent_and_rejects_write_after_close():
+    recorder = TraceRecorder(
+        trace_id="tr_789",
+        execution_type="ingestion_job",
+        execution_id="job_789",
+    )
+    with pytest.raises(ValueError, match="parent_event_id must reference"):
+        recorder.record_decision(
+            parent_event_id="missing",
+            type="knowledge_extracted",
+            status="failed",
+            title="Decision huerfana",
+        )
+    recorder.close(status="empty")
+    with pytest.raises(RuntimeError, match="trace recorder is closed"):
+        recorder.record_step(
+            type="ingestion_finalized",
+            status="succeeded",
+            title="Ingesta finalizada",
+        )

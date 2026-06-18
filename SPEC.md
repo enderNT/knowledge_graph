@@ -60,7 +60,7 @@ V20: Contract tests cover sequence, nesting, copy, payload completeness, persist
 id|status|task|cites
 T1|x|add canonical trace schemas + closed vocab types|V1,V2,V4,V9,I.store
 T2|x|add ArcadeDB trace schema bootstrap + store methods|V1,V2,V7,V17,I.store
-T3|.|add trace buffer/recorder with sequence, parent ids, close aggregation|V6,V7,V9,V15,V17,I.ingestion
+T3|x|add trace buffer/recorder with sequence, parent ids, close aggregation|V6,V7,V9,V15,V17,I.ingestion
 T4|.|add Spanish trace copy template module|V14,I.copy
 T5|.|expose/capture LLM boundary payloads for extraction + vetting|V10,V11,I.llm
 T6|.|capture embedding metadata without vectors|V12,I.embed
