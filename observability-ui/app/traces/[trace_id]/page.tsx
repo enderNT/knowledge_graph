@@ -5,6 +5,7 @@ import Container from "@/components/Container";
 import PayloadTree from "@/components/PayloadTree";
 import StatusBadge from "@/components/StatusBadge";
 import { getTraceDetail, type CanonicalTrace, type TraceEvent } from "@/lib/api";
+import { traceReadingOrder } from "@/lib/trace-reading-order";
 
 function fmt(ms?: number | null) {
   if (ms == null) return "—";
@@ -25,25 +26,6 @@ function hasData(value: unknown) {
   return true;
 }
 
-function readingOrder(events: TraceEvent[]) {
-  const byParent = new Map<string | null, TraceEvent[]>();
-  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
-    const key = event.parent_event_id ?? null;
-    byParent.set(key, [...(byParent.get(key) ?? []), event]);
-  }
-  const rows: { event: TraceEvent; depth: number; index: number }[] = [];
-  let index = 1;
-  function visit(parent: string | null, depth: number) {
-    for (const event of byParent.get(parent) ?? []) {
-      rows.push({ event, depth, index });
-      index += 1;
-      visit(event.event_id, depth + 1);
-    }
-  }
-  visit(null, 0);
-  return rows;
-}
-
 export default function TraceDetailPage({ params }: { params: Promise<{ trace_id: string }> }) {
   const { trace_id } = use(params);
   const [trace, setTrace] = useState<CanonicalTrace | null>(null);
@@ -56,7 +38,7 @@ export default function TraceDetailPage({ params }: { params: Promise<{ trace_id
       .finally(() => setLoading(false));
   }, [trace_id]);
 
-  const rows = useMemo(() => readingOrder(trace?.events ?? []), [trace]);
+  const rows = useMemo(() => traceReadingOrder(trace?.events ?? []), [trace]);
 
   return (
     <Container maxWidth={1040}>
