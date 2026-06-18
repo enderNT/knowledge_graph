@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.schema_bootstrap_traces import _build_commands
 from app.store import InMemoryKnowledgeStore
+from app.trace_copy import trace_summary, trace_title
 from app.trace_models import CanonicalTrace, TraceEvent, TraceSummary
 from app.trace_recorder import TraceRecorder
 
@@ -143,3 +144,9 @@ def test_trace_recorder_requires_existing_parent_and_rejects_write_after_close()
             status="succeeded",
             title="Ingesta finalizada",
         )
+
+
+def test_trace_copy_is_spanish_and_deterministic():
+    assert trace_title("knowledge_extracted", "succeeded") == "Conocimiento extraido"
+    assert trace_title("knowledge_extracted", "succeeded", subject="ep_123") == "Conocimiento extraido: ep_123"
+    assert trace_summary("extraction_vetted") == "El juez LLM reviso la extraccion antes de persistirla."
