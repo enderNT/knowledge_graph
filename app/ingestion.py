@@ -19,9 +19,34 @@ from app.schemas import (
 )
 from app.store import ConceptConflictError, KnowledgeStore
 from app.trace import bind
+from app.trace_copy import trace_summary, trace_title
+from app.trace_models import CanonicalTrace
+from app.trace_recorder import TraceRecorder
 from app.utils import make_prefixed_id, normalize_text
 
 logger = logging.getLogger(__name__)
+
+
+def _extraction_counts(extraction: ExtractionResult) -> dict[str, int]:
+    return {
+        "concepts": len(extraction.concepts),
+        "claims": len(extraction.claims),
+        "relations": len(extraction.relations),
+    }
+
+
+def _trace_status_for_counts(counts: dict[str, int]):
+    return "succeeded" if sum(counts.values()) > 0 else "empty"
+
+
+def _trace_vetting_status(raw: ExtractionResult, vetted: ExtractionResult):
+    raw_total = sum(_extraction_counts(raw).values())
+    vetted_total = sum(_extraction_counts(vetted).values())
+    if vetted_total == 0:
+        return "empty"
+    if vetted_total < raw_total:
+        return "partial"
+    return "succeeded"
 
 
 class IngestionService:
@@ -72,6 +97,24 @@ class IngestionService:
         bind(run_id=job_id, step="start")
         logger.info("job started", extra={"episode_id": episode.uid, "language": episode.language, "tags": episode.tags, "input_shape": {"episode_id": episode.uid, "language": episode.language, "tags_count": len(episode.tags), "text_len": len(episode.text)}})
         t0 = time.monotonic()
+        trace = TraceRecorder(
+            execution_type="ingestion_job",
+            execution_id=job_id,
+            episode_id=episode.uid,
+        )
+        trace.record_step(
+            type="fragment_received",
+            status="succeeded",
+            title=trace_title("fragment_received", "succeeded"),
+            summary=trace_summary("fragment_received"),
+            input={
+                "episode_id": episode.uid,
+                "language": episode.language,
+                "tags": episode.tags,
+                "text_len": len(episode.text),
+            },
+            output={"job_id": job_id, "episode_id": episode.uid},
+        )
         await self.store.update_job(job_id, status="processing")
         try:
             bind(step="embed_episode")
@@ -81,6 +124,8 @@ class IngestionService:
 
             bind(step="extract")
             extraction = await self.ai_provider.extract(episode.text, episode.language, episode.tags)
+            raw_extraction = extraction
+            extraction_boundary = self.ai_provider.consume_last_llm_boundary_payload()
             logger.info(
                 "extraction complete",
                 extra={
@@ -91,6 +136,15 @@ class IngestionService:
                     "output_shape": {"domain": extraction.domain, "concepts": len(extraction.concepts), "claims": len(extraction.claims), "relations": len(extraction.relations)},
                 },
             )
+            trace.record_step(
+                type="knowledge_extracted",
+                status=_trace_status_for_counts(_extraction_counts(extraction)),
+                title=trace_title("knowledge_extracted", _trace_status_for_counts(_extraction_counts(extraction))),
+                summary=trace_summary("knowledge_extracted"),
+                input={"language": episode.language, "tags": episode.tags, "text_len": len(episode.text)},
+                output={"domain": extraction.domain, **_extraction_counts(extraction)},
+                boundary_payload=extraction_boundary,
+            )
 
             bind(step="vet_extraction")
             vetting = await self.ai_provider.vet_extraction(
@@ -98,6 +152,7 @@ class IngestionService:
                 text=episode.text,
                 language=episode.language,
             )
+            vetting_boundary = self.ai_provider.consume_last_llm_boundary_payload()
             extraction = ExtractionResult(
                 domain=extraction.domain,
                 topics=extraction.topics,
@@ -105,6 +160,7 @@ class IngestionService:
                 claims=vetting.claims,
                 relations=vetting.relations,
             )
+            vetted_status = _trace_vetting_status(raw_extraction, extraction)
             logger.info(
                 "extraction vetted",
                 extra={
@@ -113,6 +169,16 @@ class IngestionService:
                     "relations_kept": len(extraction.relations),
                     "output_shape": {"concepts_kept": len(extraction.concepts), "claims_kept": len(extraction.claims), "relations_kept": len(extraction.relations)},
                 },
+            )
+            trace.record_step(
+                type="extraction_vetted",
+                status=vetted_status,
+                title=trace_title("extraction_vetted", vetted_status),
+                summary=trace_summary("extraction_vetted"),
+                input=_extraction_counts(raw_extraction),
+                output={f"{key}_kept": value for key, value in _extraction_counts(extraction).items()},
+                detail={"decisions": [decision.model_dump() for decision in vetting.decisions]},
+                boundary_payload=vetting_boundary,
             )
 
             summary = IngestionSummary(episode_id=episode.uid, domain=extraction.domain)
@@ -305,6 +371,33 @@ class IngestionService:
                     "output_shape": {"created_concepts": len(summary.created_concepts), "updated_concepts": len(summary.updated_concepts), "created_claims": summary.created_claims, "relations": len(summary.relations), "needs_review": len(summary.needs_review)},
                 },
             )
+            final_status = "needs_review" if summary.needs_review else "succeeded"
+            trace.record_step(
+                type="ingestion_finalized",
+                status=final_status,
+                title=trace_title("ingestion_finalized", final_status),
+                summary=trace_summary("ingestion_finalized"),
+                output={
+                    "created_concepts": len(summary.created_concepts),
+                    "updated_concepts": len(summary.updated_concepts),
+                    "created_claims": summary.created_claims,
+                    "relations": len(summary.relations),
+                    "needs_review": len(summary.needs_review),
+                },
+            )
+            await self._persist_trace_safely(
+                trace.close(
+                    status=final_status,
+                    domain=summary.domain,
+                    semantic_counts={
+                        "created_concepts": len(summary.created_concepts),
+                        "updated_concepts": len(summary.updated_concepts),
+                        "created_claims": summary.created_claims,
+                        "relations": len(summary.relations),
+                        "needs_review": len(summary.needs_review),
+                    },
+                )
+            )
         except Exception as exc:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             error_message = str(exc).strip() or exc.__class__.__name__
@@ -314,9 +407,31 @@ class IngestionService:
                 extra={"duration_ms": elapsed_ms, "error": error_message, "error_type": exc.__class__.__name__, "error_message": error_message[:200]},
                 exc_info=True,
             )
+            trace.record_step(
+                type="ingestion_failed",
+                status="failed",
+                title=trace_title("ingestion_failed", "failed"),
+                summary=trace_summary("ingestion_failed"),
+                output={"error_type": exc.__class__.__name__, "error_message": error_message[:500]},
+            )
             await self.store.update_episode(episode.uid, status="failed", error_message=error_message)
             await self.store.update_job(job_id, status="failed", error=error_message)
+            await self._persist_trace_safely(trace.close(status="failed", semantic_counts={"errors": 1}))
             raise
+
+    async def _persist_trace_safely(self, trace: CanonicalTrace) -> None:
+        try:
+            await self.store.persist_canonical_trace(trace)
+        except Exception as exc:
+            logger.error(
+                "canonical trace persistence failed",
+                extra={
+                    "trace_id": trace.summary.trace_id,
+                    "execution_id": trace.summary.execution_id,
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc)[:300],
+                },
+            )
 
     async def _resolve_concept(
         self,

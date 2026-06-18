@@ -8,11 +8,13 @@ import pytest
 from app.ai_provider import StubAIProvider
 from app.ingestion import IngestionService
 from app.schemas import (
+    AddKnowledgeFragmentRequest,
     CandidateHit,
     ExtractedConcept,
     ExtractedClaim,
     ExtractedRelation,
     ExtractionResult,
+    ExtractionVettingResult,
     UpsertConceptRequest,
 )
 
@@ -163,6 +165,72 @@ def test_ingestion_pipeline_end_to_end(client, auth_headers):
     assert tutor_by_job.json()["resolved_reference"]["resolved_episode_id"] == accepted["episode_id"]
     assert tutor_by_job.json()["concepts"] == tutor_by_episode.json()["concepts"]
     assert tutor_by_job.json()["claims"] == tutor_by_episode.json()["claims"]
+
+
+def test_ingestion_pipeline_persists_canonical_trace(client, auth_headers, store):
+    response = client.post(
+        "/v1/knowledge/fragments",
+        headers=auth_headers,
+        json={
+            "text": "Condicionamiento Clásico contrasta con Condicionamiento Operante.",
+            "source_type": "manual_input",
+            "tags": ["Psicología"],
+            "language": "es",
+        },
+    )
+    accepted = response.json()
+    job = _wait_for_job_completion(client, auth_headers, accepted["job_id"])
+
+    traces = asyncio.run(store.list_canonical_traces(execution_id=accepted["job_id"]))
+    assert job["status"] == "completed"
+    assert len(traces) == 1
+    trace = asyncio.run(store.get_canonical_trace(traces[0].trace_id))
+    assert trace is not None
+    assert trace.summary.execution_id == accepted["job_id"]
+    assert trace.summary.episode_id == accepted["episode_id"]
+    assert trace.summary.status in {"succeeded", "needs_review"}
+    assert [event.type for event in trace.events] == [
+        "fragment_received",
+        "knowledge_extracted",
+        "extraction_vetted",
+        "ingestion_finalized",
+    ]
+    assert [event.sequence for event in trace.events] == [1, 2, 3, 4]
+    assert trace.events[0].title == "Fragmento recibido"
+    assert trace.summary.total_steps == 4
+
+
+@pytest.mark.asyncio
+async def test_failed_ingestion_persists_failed_canonical_trace(settings, store):
+    class FailingProvider(StubAIProvider):
+        async def extract(self, text: str, language: str, tags: list[str]) -> ExtractionResult:
+            raise ValueError("boom")
+
+        async def vet_extraction(
+            self,
+            *,
+            extraction: ExtractionResult,
+            text: str,
+            language: str,
+        ) -> ExtractionVettingResult:
+            return ExtractionVettingResult()
+
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    service = IngestionService(settings=settings, store=store, ai_provider=FailingProvider(settings), queue=queue)
+    accepted = await service.submit_fragment(
+        AddKnowledgeFragmentRequest(text="Texto que falla.", tags=["General"], language="es")
+    )
+
+    with pytest.raises(ValueError, match="boom"):
+        await service.process_job(accepted.job_id)
+
+    traces = await store.list_canonical_traces(execution_id=accepted.job_id)
+    assert len(traces) == 1
+    trace = await store.get_canonical_trace(traces[0].trace_id)
+    assert trace is not None
+    assert trace.summary.status == "failed"
+    assert trace.events[-1].type == "ingestion_failed"
+    assert trace.events[-1].status == "failed"
 
 
 def test_neighborhood_exposes_claims_and_episode_evidence(client, auth_headers):
