@@ -7,7 +7,8 @@ from app.config import Settings
 from app.schema_bootstrap_traces import _build_commands
 from app.store import InMemoryKnowledgeStore
 from app.trace_copy import trace_summary, trace_title
-from app.trace_models import CanonicalTrace, TraceEvent, TraceSummary
+from app.trace_export import render_trace_text
+from app.trace_models import CanonicalTrace, TraceBoundaryPayload, TraceEvent, TraceSummary
 from app.trace_recorder import TraceRecorder
 
 
@@ -122,6 +123,60 @@ def test_trace_recorder_records_monotonic_sequence_and_close_summary():
     assert trace.summary.status_counts == {"succeeded": 1, "needs_review": 1}
     assert trace.summary.semantic_counts == {"concepts": 2}
     assert trace.summary.domain == "Psicologia"
+
+
+def test_trace_recorder_preserves_complete_llm_boundary_payload():
+    recorder = TraceRecorder(
+        trace_id="tr_llm",
+        execution_type="ingestion_job",
+        execution_id="job_llm",
+    )
+    full_prompt = "PROMPT COMPLETO\ncon segunda linea y {{variables}} intactas"
+    full_output = '{"concepts": [{"name": "Aprendizaje"}]}'
+
+    recorder.record_step(
+        type="knowledge_extracted",
+        status="succeeded",
+        title=trace_title("knowledge_extracted", "succeeded"),
+        boundary_payload=TraceBoundaryPayload(
+            kind="llm",
+            provider="openai_compatible",
+            model="modelo-test",
+            request_text=full_prompt,
+            response_text=full_output,
+        ),
+    )
+    trace = recorder.close(status="succeeded")
+
+    payload = trace.events[0].boundary_payload
+    assert payload is not None
+    assert payload.request_text == full_prompt
+    assert payload.response_text == full_output
+
+
+def test_trace_export_renders_nested_reading_order_without_raw_sequence_leak():
+    parent = _event(
+        event_id="te_parent",
+        parent_event_id=None,
+        sequence=2,
+        role="step",
+        type="concepts_resolved",
+        title=trace_title("concepts_resolved", "succeeded"),
+    )
+    child = _event(
+        event_id="te_child",
+        parent_event_id="te_parent",
+        sequence=1,
+        role="decision",
+        type="concepts_resolved",
+        title=trace_title("concepts_resolved", "succeeded", subject="Aprendizaje"),
+    )
+    rendered = render_trace_text(CanonicalTrace(summary=_summary(), events=[child, parent]))
+
+    assert "1. Conceptos resueltos [succeeded]" in rendered
+    assert "  2. Conceptos resueltos: Aprendizaje [succeeded]" in rendered
+    assert "sequence" not in rendered
+    assert "te_child" not in rendered
 
 
 def test_trace_recorder_requires_existing_parent_and_rejects_write_after_close():
