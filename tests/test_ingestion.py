@@ -17,6 +17,7 @@ from app.schemas import (
     ExtractionVettingResult,
     UpsertConceptRequest,
 )
+from app.store import InMemoryKnowledgeStore
 
 
 @pytest.fixture
@@ -198,6 +199,60 @@ def test_ingestion_pipeline_persists_canonical_trace(client, auth_headers, store
     assert [event.sequence for event in trace.events] == [1, 2, 3, 4]
     assert trace.events[0].title == "Fragmento recibido"
     assert trace.summary.total_steps == 4
+
+
+@pytest.mark.asyncio
+async def test_trace_persistence_failure_does_not_fail_completed_ingestion(settings, caplog):
+    class TraceFailingStore(InMemoryKnowledgeStore):
+        async def persist_canonical_trace(self, trace):
+            raise RuntimeError("trace db down")
+
+    def extraction_fn(text: str, language: str, tags: list[str]) -> ExtractionResult:
+        return ExtractionResult(
+            domain="General",
+            topics=["General"],
+            concepts=[
+                ExtractedConcept(
+                    canonical_name="Aprendizaje",
+                    confidence=0.9,
+                    evidence_quotes=["Aprendizaje significativo"],
+                )
+            ],
+            claims=[
+                ExtractedClaim(
+                    text="Aprendizaje significativo conecta ideas nuevas con conocimiento previo.",
+                    confidence=0.8,
+                    explains=["Aprendizaje"],
+                    supporting_quote="Aprendizaje significativo",
+                )
+            ],
+        )
+
+    store = TraceFailingStore(settings)
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    from tests.conftest import FakeExtractionProvider
+
+    service = IngestionService(
+        settings=settings,
+        store=store,
+        ai_provider=FakeExtractionProvider(settings, extraction_fn=extraction_fn),
+        queue=queue,
+    )
+    accepted = await service.submit_fragment(
+        AddKnowledgeFragmentRequest(
+            text="Aprendizaje significativo conecta ideas nuevas con conocimiento previo.",
+            tags=["General"],
+            language="es",
+        )
+    )
+
+    with caplog.at_level("ERROR", logger="app.ingestion"):
+        await service.process_job(accepted.job_id)
+
+    job = await store.get_job(accepted.job_id)
+    assert job is not None
+    assert job.status == "completed"
+    assert any(record.getMessage() == "canonical trace persistence failed" for record in caplog.records)
 
 
 @pytest.mark.asyncio

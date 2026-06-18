@@ -65,7 +65,7 @@ T4|x|add Spanish trace copy template module|V14,I.copy
 T5|x|expose/capture LLM boundary payloads for extraction + vetting|V10,V11,I.llm
 T6|x|capture embedding metadata without vectors|V12,I.embed
 T7|x|instrument ingestion vertical slice: `fragment_received`, `knowledge_extracted`, `extraction_vetted`, `ingestion_finalized`, `ingestion_failed`|V15,V19,I.ingestion
-T8|.|ensure trace failures log operationally and never alter job result|V16,I.obs,I.ingestion
+T8|x|ensure trace failures log operationally and never alter job result|V16,I.obs,I.ingestion
 T9|.|add `/v1/traces` list/detail/export endpoints|V3,V17,V18,I.api,I.api.detail,I.api.export
 T10|.|add UI trace list + detail with reading order, nesting, LLM payload detail|V5,V8,V10,V18,I.ui
 T11|.|add text export rendering same order/indent/copy as UI|V8,V18,I.api.export,I.ui
